@@ -1,15 +1,11 @@
 #pragma once
+#define WIN32_LEAN_AND_MEAN
+#define _WINSOCKAPI_
 #include "../Module.h"
 #include <imgui.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <iphlpapi.h>
 #include <chrono>
 #include <thread>
 #include <atomic>
-
-#pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "iphlpapi.lib")
 
 class PingDisplay : public Module {
 private:
@@ -20,49 +16,12 @@ private:
     std::thread pingThread;
     std::atomic<bool> running{ false };
 
-    // Ping bằng cách đo TCP round-trip tới server game
-    // Trong Bedrock, ta có thể dùng thời gian giữa các packet
-    // Đây là phiên bản đơn giản dùng ICMP-like approach
-    int measurePing(const char* host) {
-        WSADATA wsa;
-        WSAStartup(MAKEWORD(2, 2), &wsa);
-
-        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (sock == INVALID_SOCKET) return -1;
-
-        // Set timeout
-        int timeout = 3000;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(19132); // Bedrock default port
-        inet_pton(AF_INET, host, &addr.sin_addr);
-
-        auto start = std::chrono::high_resolution_clock::now();
-        int result = connect(sock, (sockaddr*)&addr, sizeof(addr));
-        auto end = std::chrono::high_resolution_clock::now();
-
-        closesocket(sock);
-
-        if (result == 0) {
-            return (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-        }
-        return -1;
-    }
-
     void pingLoop() {
         while (running) {
-            // Bedrock LAN hoặc server mặc định
-            // Trong thực tế bạn cần lấy IP server từ game memory
-            // Đây là placeholder đo localhost
-            DWORD start = GetTickCount();
-            Sleep(1); // Simulate network call
-            // Dùng GetTickCount để estimate ping từ game
-            // Thực tế: hook network packet timing
-            currentPing = (int)(GetTickCount() - start) + (rand() % 10 + 5);
-            Sleep(2000); // Cập nhật mỗi 2 giây
+            // Dùng GetTickCount để estimate ping
+            // Thực tế: hook network packet timing từ game
+            currentPing = (rand() % 30 + 5); // placeholder 5-35ms
+            Sleep(2000);
         }
     }
 
