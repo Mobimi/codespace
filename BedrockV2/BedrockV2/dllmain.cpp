@@ -395,6 +395,17 @@ bool HandleCommand(const std::string& msg) {
 // ============================================================
 static int guiKeybind = VK_INSERT;
 
+static LRESULT CALLBACK HookedWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (ImGui_ImplWin32_WndProcHandler(h, m, w, l)) return true;
+    if (g_guiOpen) switch(m) {
+        case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+        case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+        case WM_MOUSEMOVE:   case WM_MOUSEWHEEL:
+        case WM_KEYDOWN:     case WM_KEYUP: case WM_CHAR: return 0;
+    }
+    return CallWindowProcA(oWndProc, h, m, w, l);
+}
+
 void ApplyStyle() {
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowRounding=8; s.FrameRounding=4; s.ScrollbarRounding=4;
@@ -419,16 +430,7 @@ HRESULT __stdcall HookedPresent(IDXGISwapChain* chain, UINT sync, UINT flags) {
 
         DXGI_SWAP_CHAIN_DESC desc; chain->GetDesc(&desc);
         g_hwnd = desc.OutputWindow;
-        oWndProc = (WndProc_t)SetWindowLongPtrA(g_hwnd,GWLP_WNDPROC,(LONG_PTR)[](HWND h,UINT m,WPARAM w,LPARAM l)->LRESULT{
-            if(ImGui_ImplWin32_WndProcHandler(h,m,w,l)) return true;
-            if(g_guiOpen) switch(m){
-                case WM_LBUTTONDOWN:case WM_LBUTTONUP:
-                case WM_RBUTTONDOWN:case WM_RBUTTONUP:
-                case WM_MOUSEMOVE:case WM_MOUSEWHEEL:
-                case WM_KEYDOWN:case WM_KEYUP:case WM_CHAR: return 0;
-            }
-            return CallWindowProcA(oWndProc,h,m,w,l);
-        });
+        oWndProc = (WndProc_t)SetWindowLongPtrA(g_hwnd, GWLP_WNDPROC, (LONG_PTR)HookedWndProc);
 
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
