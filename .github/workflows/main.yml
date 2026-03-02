@@ -24,7 +24,9 @@ jobs:
         run: |
           msbuild vendor/minhook/build/VC17/MinHookVC17.sln /p:Configuration=Release /p:Platform=x64 /m
           New-Item -ItemType Directory -Force -Path vendor/minhook/lib
-          Copy-Item "vendor/minhook/bin/Release64/libMinHook.x64.lib" "vendor/minhook/lib/libMinHook.x64.lib"
+          $lib = Get-ChildItem -Recurse -Filter "*.lib" vendor/minhook | Select-Object -First 1
+          Write-Host "Found lib at: $($lib.FullName)"
+          Copy-Item $lib.FullName "vendor/minhook/lib/libMinHook.x64.lib"
 
       - name: Configure CMake
         run: cmake -B build -A x64
