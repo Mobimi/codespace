@@ -1,0 +1,39 @@
+name: Build BedrockClient DLL
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Clone ImGui
+        run: git clone https://github.com/ocornut/imgui.git vendor/imgui
+
+      - name: Clone MinHook
+        run: git clone https://github.com/TsudaKageyu/minhook.git vendor/minhook
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build MinHook x64
+        run: |
+          msbuild vendor/minhook/build/VC17/MinHookVC17.sln /p:Configuration=Release /p:Platform=x64 /m
+          New-Item -ItemType Directory -Force -Path vendor/minhook/lib
+          Copy-Item "vendor/minhook/bin/Release64/libMinHook.x64.lib" "vendor/minhook/lib/libMinHook.x64.lib"
+
+      - name: Configure CMake
+        run: cmake -B build -A x64
+
+      - name: Build DLL
+        run: cmake --build build --config Release
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: BedrockClient-DLL
+          path: build/Release/BedrockClient.dll
