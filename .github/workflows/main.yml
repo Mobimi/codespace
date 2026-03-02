@@ -12,21 +12,20 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Clone ImGui
-        run: git clone https://github.com/ocornut/imgui.git vendor/imgui
+        run: git clone https://github.com/ocornut/imgui.git BedrockClient_final/BedrockClient/vendor/imgui
 
       - name: Clone MinHook
-        run: git clone https://github.com/TsudaKageyu/minhook.git vendor/minhook
+        run: git clone https://github.com/TsudaKageyu/minhook.git BedrockClient_final/BedrockClient/vendor/minhook
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
       - name: Build MinHook x64
         run: |
-          msbuild vendor/minhook/build/VC17/MinHookVC17.sln /p:Configuration=Release /p:Platform=x64 /m
-          New-Item -ItemType Directory -Force -Path vendor/minhook/lib
-          $lib = Get-ChildItem -Recurse -Filter "*.lib" vendor/minhook | Select-Object -First 1
-          Write-Host "Found lib at: $($lib.FullName)"
-          Copy-Item $lib.FullName "vendor/minhook/lib/libMinHook.x64.lib"
+          msbuild BedrockClient_final/BedrockClient/vendor/minhook/build/VC17/MinHookVC17.sln /p:Configuration=Release /p:Platform=x64 /m
+          New-Item -ItemType Directory -Force -Path BedrockClient_final/BedrockClient/vendor/minhook/lib
+          $lib = Get-ChildItem -Recurse -Filter "*.lib" BedrockClient_final/BedrockClient/vendor/minhook | Select-Object -First 1
+          Copy-Item $lib.FullName "BedrockClient_final/BedrockClient/vendor/minhook/lib/libMinHook.x64.lib"
 
       - name: Configure CMake
         run: cmake -B build -S BedrockClient_final/BedrockClient -A x64
