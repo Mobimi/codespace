@@ -56,7 +56,6 @@ public:
         handleKeybind();
         if (!isOpen) return;
 
-        extern std::vector<std::shared_ptr<Module>> g_modules; // từ ModuleManager
 
         ImGuiIO& io = ImGui::GetIO();
 
