@@ -29,7 +29,7 @@ jobs:
           Copy-Item $lib.FullName "vendor/minhook/lib/libMinHook.x64.lib"
 
       - name: Configure CMake
-        run: cmake -B build -A x64
+        run: cmake -B build -S BedrockClient_final/BedrockClient -A x64
 
       - name: Build DLL
         run: cmake --build build --config Release
