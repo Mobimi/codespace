@@ -12,13 +12,11 @@
 #include <atomic>
 #include <algorithm>
 #include <sstream>
+#include <cmath>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
-// ============================================================
-// ImGui includes (akan di-resolve saat build)
-// ============================================================
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
@@ -28,19 +26,18 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 // ============================================================
 // GLOBALS
 // ============================================================
-static bool g_running = true;
-static bool g_guiOpen = false;
+static bool g_running   = true;
+static bool g_guiOpen   = false;
 static bool g_imguiInit = false;
 
-static ID3D11Device*            g_device    = nullptr;
-static ID3D11DeviceContext*     g_context   = nullptr;
-static ID3D11RenderTargetView*  g_rtv       = nullptr;
-static IDXGISwapChain*          g_swapChain = nullptr;
-static HWND                     g_hwnd      = nullptr;
+static ID3D11Device*           g_device  = nullptr;
+static ID3D11DeviceContext*    g_context = nullptr;
+static ID3D11RenderTargetView* g_rtv     = nullptr;
+static IDXGISwapChain*         g_swapChain = nullptr;
+static HWND                    g_hwnd    = nullptr;
 
 typedef HRESULT(__stdcall* Present_t)(IDXGISwapChain*, UINT, UINT);
 static Present_t oPresent = nullptr;
-
 typedef LRESULT(CALLBACK* WndProc_t)(HWND, UINT, WPARAM, LPARAM);
 static WndProc_t oWndProc = nullptr;
 
@@ -50,11 +47,10 @@ static WndProc_t oWndProc = nullptr;
 enum class Category { HUD, Visual, Utility };
 
 struct Module {
-    std::string name;
-    std::string desc;
-    Category    cat;
-    bool        enabled = false;
-    int         keybind = 0;
+    std::string name, desc;
+    Category cat;
+    bool enabled = false;
+    int  keybind = 0;
 
     Module(const char* n, const char* d, Category c) : name(n), desc(d), cat(c) {}
     virtual ~Module() = default;
@@ -65,7 +61,7 @@ struct Module {
     virtual void onRender() {}
 
     std::string getKeyName() const {
-        if (keybind == 0) return "None";
+        if (!keybind) return "None";
         char buf[32] = {};
         GetKeyNameTextA(MapVirtualKeyA(keybind, MAPVK_VK_TO_VSC) << 16, buf, 32);
         return buf[0] ? buf : "?";
@@ -73,14 +69,16 @@ struct Module {
 };
 
 // ============================================================
-// KEYSTROKE MODULE
+// KEYSTROKES MODULE (với kéo thả)
 // ============================================================
 struct Keystrokes : Module {
     std::deque<std::chrono::steady_clock::time_point> lClicks, rClicks;
     bool prevL = false, prevR = false;
     float px = 20, py = 200;
+    bool dragging = false;
+    float dragOffX = 0, dragOffY = 0;
 
-    Keystrokes() : Module("Keystrokes", "WASD + LMB/RMB + CPS", Category::HUD) { enabled = true; }
+    Keystrokes() : Module("Keystrokes", "WASD + LMB/RMB + CPS (keo tha duoc)", Category::HUD) { enabled = true; }
 
     int cps(std::deque<std::chrono::steady_clock::time_point>& q) {
         auto now = std::chrono::steady_clock::now();
@@ -98,7 +96,7 @@ struct Keystrokes : Module {
         prevL = L; prevR = R;
     }
 
-    void key(ImDrawList* dl, float x, float y, float w, float h, const char* lbl, bool pressed, int c = -1) {
+    void drawKey(ImDrawList* dl, float x, float y, float w, float h, const char* lbl, bool pressed, int c = -1) {
         ImU32 bg  = pressed ? IM_COL32(255,255,255,220) : IM_COL32(30,30,30,180);
         ImU32 fg  = pressed ? IM_COL32(0,0,0,255)       : IM_COL32(255,255,255,255);
         ImU32 brd = pressed ? IM_COL32(255,255,255,255)  : IM_COL32(100,100,100,200);
@@ -116,17 +114,41 @@ struct Keystrokes : Module {
 
     void onRender() override {
         auto* dl = ImGui::GetBackgroundDrawList();
+        auto& io = ImGui::GetIO();
+
         bool W = GetAsyncKeyState('W')&0x8000, A = GetAsyncKeyState('A')&0x8000;
         bool S = GetAsyncKeyState('S')&0x8000, D = GetAsyncKeyState('D')&0x8000;
         bool L = GetAsyncKeyState(VK_LBUTTON)&0x8000, R = GetAsyncKeyState(VK_RBUTTON)&0x8000;
-        float g = 4, k = 40;
-        key(dl, px+k+g,     py,       k, k, "W", W);
-        key(dl, px,          py+k+g,   k, k, "A", A);
-        key(dl, px+k+g,     py+k+g,   k, k, "S", S);
-        key(dl, px+(k+g)*2, py+k+g,   k, k, "D", D);
-        float mw = (k*3+g*2)/2 - g/2;
-        key(dl, px,       py+(k+g)*2, mw, 55, "LMB", L, cps(lClicks));
-        key(dl, px+mw+g,  py+(k+g)*2, mw, 55, "RMB", R, cps(rClicks));
+
+        float g = 4, k = 40, mh = 55;
+        float totalW = k*3 + g*2;
+        float totalH = k*2 + g + mh + g;
+
+        // Kéo thả khi giữ Shift + Click trái vào vùng Keystrokes
+        if (!g_guiOpen) {
+            float mx = io.MousePos.x, my = io.MousePos.y;
+            bool inBox = mx >= px && mx <= px+totalW && my >= py && my <= py+totalH;
+
+            if (inBox && GetAsyncKeyState(VK_SHIFT)&0x8000 && GetAsyncKeyState(VK_LBUTTON)&0x8000) {
+                if (!dragging) { dragging=true; dragOffX=mx-px; dragOffY=my-py; }
+            }
+            if (!(GetAsyncKeyState(VK_LBUTTON)&0x8000)) dragging = false;
+            if (dragging) { px = mx-dragOffX; py = my-dragOffY; }
+        }
+
+        drawKey(dl, px+k+g,      py,         k,  k,  "W",   W);
+        drawKey(dl, px,           py+k+g,     k,  k,  "A",   A);
+        drawKey(dl, px+k+g,      py+k+g,     k,  k,  "S",   S);
+        drawKey(dl, px+(k+g)*2,  py+k+g,     k,  k,  "D",   D);
+        float mw = totalW/2 - g/2;
+        drawKey(dl, px,           py+(k+g)*2, mw, mh, "LMB", L, cps(lClicks));
+        drawKey(dl, px+mw+g,     py+(k+g)*2, mw, mh, "RMB", R, cps(rClicks));
+
+        // Hint kéo thả
+        if (!g_guiOpen) {
+            auto hs = ImGui::CalcTextSize("Shift+Drag");
+            dl->AddText({px+totalW/2-hs.x/2, py-14}, IM_COL32(150,150,150,120), "Shift+Drag");
+        }
     }
 };
 
@@ -192,20 +214,90 @@ struct PingDisplay : Module {
         char nb[16]; snprintf(nb,16,"%dms",p);
         dl->AddText({px+ls.x,py}, col, nb);
     }
-
     ~PingDisplay() { run=false; if(thr.joinable()) thr.join(); }
+};
+
+// ============================================================
+// AIM ASSIST MODULE
+// ============================================================
+struct AimAssist : Module {
+    // Settings
+    float strength  = 0.08f;  // 0.0 - 1.0 (mạnh đến đâu)
+    float fov       = 90.0f;  // Chỉ hoạt động khi chuột trong vòng FOV này (pixels)
+    bool  onlyLMB   = true;   // Chỉ hoạt động khi giữ LMB (đang đánh)
+
+    // State
+    POINT lastMouse = {};
+    bool  active    = false;
+
+    AimAssist() : Module("AimAssist", "Ho tro aim vao player", Category::Utility) {}
+
+    void onRender() override {
+        // Chỉ hoạt động khi:
+        // 1. Không mở GUI
+        // 2. Đang giữ LMB (nếu onlyLMB = true)
+        if (g_guiOpen) return;
+        if (onlyLMB && !(GetAsyncKeyState(VK_LBUTTON)&0x8000)) return;
+
+        // Lấy vị trí chuột hiện tại
+        POINT cur;
+        GetCursorPos(&cur);
+
+        // Lấy center màn hình (crosshair)
+        auto& io = ImGui::GetIO();
+        float cx = io.DisplaySize.x / 2.0f;
+        float cy = io.DisplaySize.y / 2.0f;
+
+        // Tìm entity gần crosshair nhất trong game window
+        // Vì không đọc memory, mình dùng cách: 
+        // Scan màn hình tìm pixel màu của nametag (trắng) hoặc entity
+        // Đây là soft aim - kéo chuột nhẹ về phía center khi có target
+
+        // Simple version: smooth pull về crosshair khi đang combat
+        // Thực tế cần entity list từ memory để làm đúng
+        // Hiện tại: khi giữ LMB, smooth chuột về phía center một chút
+        // giúp aim ổn định hơn khi đánh gần
+
+        float dx = cx - cur.x;
+        float dy = cy - cur.y;
+        float dist = sqrtf(dx*dx + dy*dy);
+
+        // Chỉ assist khi chuột trong FOV
+        if (dist < fov && dist > 2.0f) {
+            float moveX = dx * strength;
+            float moveY = dy * strength * 0.5f; // vertical nhẹ hơn
+            mouse_event(MOUSEEVENTF_MOVE, (DWORD)moveX, (DWORD)moveY, 0, 0);
+        }
+    }
+
+    // Render settings trong GUI
+    void renderSettings() {
+        ImGui::SliderFloat("Strength##aa", &strength, 0.01f, 0.3f, "%.2f");
+        ImGui::SliderFloat("FOV##aa",      &fov,      20.0f, 200.0f, "%.0fpx");
+        ImGui::Checkbox("Only when LMB##aa", &onlyLMB);
+
+        // FOV circle preview
+        auto* dl = ImGui::GetWindowDrawList();
+        auto& io = ImGui::GetIO();
+        dl->AddCircle(
+            {io.DisplaySize.x/2, io.DisplaySize.y/2},
+            fov, IM_COL32(255,100,100,80), 64, 1.5f
+        );
+    }
 };
 
 // ============================================================
 // MODULE MANAGER
 // ============================================================
 static std::vector<Module*> g_modules;
+static AimAssist* g_aimAssist = nullptr;
 
 void ModuleManager_Init() {
     g_modules.push_back(new Keystrokes());
     g_modules.push_back(new FPSDisplay());
     g_modules.push_back(new PingDisplay());
-    // Ping cần start thread
+    g_aimAssist = new AimAssist();
+    g_modules.push_back(g_aimAssist);
     for(auto* m : g_modules) if(m->enabled) m->onToggle();
 }
 
@@ -233,10 +325,10 @@ Module* ModuleManager_Find(const std::string& name) {
 // ============================================================
 // CLICK GUI
 // ============================================================
-static bool g_waitBind = false;
+static bool    g_waitBind   = false;
 static Module* g_bindTarget = nullptr;
 
-static std::map<Category, ImVec4> catColor = {
+static std::map<Category, ImVec4>     catColor = {
     {Category::HUD,     {0.2f,0.6f,1.f,1.f}},
     {Category::Visual,  {0.4f,1.f,0.5f,1.f}},
     {Category::Utility, {1.f,0.7f,0.2f,1.f}},
@@ -256,20 +348,18 @@ void RenderClickGUI() {
 
     for (auto& [cat, pos] : catPos) {
         ImGui::SetNextWindowPos(pos, ImGuiCond_Once);
-        ImGui::SetNextWindowSize({170,350}, ImGuiCond_Once);
-
-        auto& col = catColor[cat];
-        ImGui::PushStyleColor(ImGuiCol_WindowBg,       {0.08f,0.08f,0.08f,0.95f});
-        ImGui::PushStyleColor(ImGuiCol_TitleBgActive,  {0.1f,0.1f,0.1f,1.f});
+        ImGui::SetNextWindowSize({180,400}, ImGuiCond_Once);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg,      {0.08f,0.08f,0.08f,0.95f});
+        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, {0.1f,0.1f,0.1f,1.f});
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,  4.f);
 
         std::string wid = std::string("##") + catName[cat];
         ImGui::Begin(wid.c_str(), nullptr, ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize);
 
-        ImGui::PushStyleColor(ImGuiCol_Text, col);
+        ImGui::PushStyleColor(ImGuiCol_Text, catColor[cat]);
         float tw = ImGui::CalcTextSize(catName[cat]).x;
-        ImGui::SetCursorPosX((170-tw)/2);
+        ImGui::SetCursorPosX((180-tw)/2);
         ImGui::Text("%s", catName[cat]);
         ImGui::PopStyleColor();
         ImGui::Separator(); ImGui::Spacing();
@@ -292,7 +382,14 @@ void RenderClickGUI() {
                 m->toggle();
             ImGui::PopStyleColor(3);
 
-            // Right click = set bind
+            // AimAssist settings inline
+            if (en && m == g_aimAssist) {
+                ImGui::Indent(8);
+                g_aimAssist->renderSettings();
+                ImGui::Unindent(8);
+                ImGui::Spacing();
+            }
+
             std::string pid = "ctx_" + m->name;
             if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                 ImGui::OpenPopup(pid.c_str());
@@ -309,7 +406,6 @@ void RenderClickGUI() {
         ImGui::PopStyleColor(2);
     }
 
-    // Waiting for bind
     if (g_waitBind && g_bindTarget) {
         ImGui::SetNextWindowPos({io.DisplaySize.x/2-120, io.DisplaySize.y/2-40}, ImGuiCond_Always);
         ImGui::SetNextWindowSize({240,80}, ImGuiCond_Always);
@@ -348,43 +444,35 @@ static std::map<std::string,int> keyMap = {
 bool HandleCommand(const std::string& msg) {
     if (msg.empty() || msg[0] != '.') return false;
     std::istringstream ss(msg.substr(1));
-    std::vector<std::string> tok;
-    std::string t;
+    std::vector<std::string> tok; std::string t;
     while(ss>>t) tok.push_back(t);
     if(tok.empty()) return false;
+    std::string cmd=tok[0]; for(auto& c:cmd) c=toupper(c);
+    auto showMsg=[](const std::string& s){ OutputDebugStringA(("[Client] "+s+"\n").c_str()); };
 
-    std::string cmd = tok[0];
-    for(auto& c:cmd) c=toupper(c);
-
-    auto showMsg = [](const std::string& s){ OutputDebugStringA(("[Client] "+s+"\n").c_str()); };
-
-    if (cmd=="BIND") {
+    if(cmd=="BIND"){
         if(tok.size()<3){ showMsg("Usage: .bind [module] [key]"); return true; }
-        auto* m = ModuleManager_Find(tok[1]);
+        auto* m=ModuleManager_Find(tok[1]);
         if(!m){ showMsg("Module not found!"); return true; }
         std::string key=tok[2]; for(auto& c:key) c=toupper(c);
         if(keyMap.find(key)==keyMap.end()){ showMsg("Key not found!"); return true; }
-        m->keybind = keyMap[key];
-        showMsg("Bound "+m->name+" to "+key);
-        return true;
+        m->keybind=keyMap[key];
+        showMsg("Bound "+m->name+" to "+key); return true;
     }
-    if (cmd=="UNBIND") {
+    if(cmd=="UNBIND"){
         if(tok.size()<2) return true;
-        auto* m = ModuleManager_Find(tok[1]);
-        if(m){ m->keybind=0; showMsg("Unbound "+m->name); }
-        return true;
+        auto* m=ModuleManager_Find(tok[1]);
+        if(m){ m->keybind=0; showMsg("Unbound "+m->name); } return true;
     }
-    if (cmd=="TOGGLE") {
+    if(cmd=="TOGGLE"){
         if(tok.size()<2) return true;
-        auto* m = ModuleManager_Find(tok[1]);
-        if(m){ m->toggle(); showMsg(m->name+(m->enabled?" enabled":" disabled")); }
-        return true;
+        auto* m=ModuleManager_Find(tok[1]);
+        if(m){ m->toggle(); showMsg(m->name+(m->enabled?" enabled":" disabled")); } return true;
     }
-    if (cmd=="HELP") {
-        showMsg(".bind [module] [key]  - Set keybind");
-        showMsg(".unbind [module]      - Clear keybind");
-        showMsg(".toggle [module]      - Toggle module");
-        showMsg(".help                 - This help");
+    if(cmd=="HELP"){
+        showMsg(".bind [module] [key]");
+        showMsg(".unbind [module]");
+        showMsg(".toggle [module]");
         return true;
     }
     return false;
@@ -408,30 +496,29 @@ static LRESULT CALLBACK HookedWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 void ApplyStyle() {
     ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowRounding=8; s.FrameRounding=4; s.ScrollbarRounding=4;
+    s.WindowRounding=8; s.FrameRounding=4;
     auto* c = s.Colors;
-    c[ImGuiCol_WindowBg]       = {0.08f,0.08f,0.08f,0.95f};
-    c[ImGuiCol_TitleBgActive]  = {0.12f,0.12f,0.12f,1.f};
-    c[ImGuiCol_Border]         = {0.25f,0.25f,0.25f,0.6f};
-    c[ImGuiCol_Button]         = {0.18f,0.18f,0.18f,1.f};
-    c[ImGuiCol_ButtonHovered]  = {0.25f,0.45f,0.85f,1.f};
-    c[ImGuiCol_Text]           = {0.9f,0.9f,0.9f,1.f};
+    c[ImGuiCol_WindowBg]      = {0.08f,0.08f,0.08f,0.95f};
+    c[ImGuiCol_TitleBgActive] = {0.12f,0.12f,0.12f,1.f};
+    c[ImGuiCol_Border]        = {0.25f,0.25f,0.25f,0.6f};
+    c[ImGuiCol_Button]        = {0.18f,0.18f,0.18f,1.f};
+    c[ImGuiCol_ButtonHovered] = {0.25f,0.45f,0.85f,1.f};
+    c[ImGuiCol_Text]          = {0.9f,0.9f,0.9f,1.f};
+    c[ImGuiCol_SliderGrab]    = {0.25f,0.45f,0.85f,1.f};
+    c[ImGuiCol_FrameBg]       = {0.15f,0.15f,0.15f,1.f};
 }
 
 HRESULT __stdcall HookedPresent(IDXGISwapChain* chain, UINT sync, UINT flags) {
     if (!g_imguiInit) {
         chain->GetDevice(__uuidof(ID3D11Device),(void**)&g_device);
         g_device->GetImmediateContext(&g_context);
-
         ID3D11Texture2D* bb=nullptr;
         chain->GetBuffer(0,__uuidof(ID3D11Texture2D),(void**)&bb);
         g_device->CreateRenderTargetView(bb,nullptr,&g_rtv);
         bb->Release();
-
         DXGI_SWAP_CHAIN_DESC desc; chain->GetDesc(&desc);
         g_hwnd = desc.OutputWindow;
         oWndProc = (WndProc_t)SetWindowLongPtrA(g_hwnd, GWLP_WNDPROC, (LONG_PTR)HookedWndProc);
-
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -442,7 +529,6 @@ HRESULT __stdcall HookedPresent(IDXGISwapChain* chain, UINT sync, UINT flags) {
         g_imguiInit = true;
     }
 
-    // Toggle GUI
     if (GetAsyncKeyState(guiKeybind)&1) {
         g_guiOpen = !g_guiOpen;
         ImGui::GetIO().MouseDrawCursor = g_guiOpen;
@@ -459,34 +545,23 @@ HRESULT __stdcall HookedPresent(IDXGISwapChain* chain, UINT sync, UINT flags) {
     ImGui::Render();
     g_context->OMSetRenderTargets(1,&g_rtv,nullptr);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-
     return oPresent(chain,sync,flags);
 }
 
 void HookInit() {
-    // Tạo dummy device để lấy Present VMT
     DXGI_SWAP_CHAIN_DESC sd{};
     sd.BufferCount=1; sd.BufferDesc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
     sd.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.OutputWindow=GetForegroundWindow();
     sd.SampleDesc.Count=1; sd.Windowed=TRUE;
     sd.SwapEffect=DXGI_SWAP_EFFECT_DISCARD;
-
     ID3D11Device* dd=nullptr; IDXGISwapChain* ds=nullptr; ID3D11DeviceContext* dc=nullptr;
     D3D_FEATURE_LEVEL fl=D3D_FEATURE_LEVEL_11_0;
-
-    if(FAILED(D3D11CreateDeviceAndSwapChain(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,0,&fl,1,D3D11_SDK_VERSION,&sd,&ds,&dd,nullptr,&dc)))
-        return;
-
-    void** vmt = *(void***)ds;
-    void* presentAddr = vmt[8];
-
-    // Manual hook: patch vtable
+    if(FAILED(D3D11CreateDeviceAndSwapChain(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,0,&fl,1,D3D11_SDK_VERSION,&sd,&ds,&dd,nullptr,&dc))) return;
+    void** vmt=*(void***)ds;
     DWORD old; VirtualProtect(&vmt[8],8,PAGE_EXECUTE_READWRITE,&old);
-    oPresent = (Present_t)vmt[8];
-    vmt[8] = HookedPresent;
+    oPresent=(Present_t)vmt[8]; vmt[8]=HookedPresent;
     VirtualProtect(&vmt[8],8,old,&old);
-
     ds->Release(); dd->Release(); dc->Release();
 }
 
@@ -497,15 +572,9 @@ void MainThread(HMODULE hMod) {
     Sleep(500);
     ModuleManager_Init();
     HookInit();
-
-    while(g_running && !(GetAsyncKeyState(VK_END)&1))
-        Sleep(100);
-
-    // Cleanup
+    while(g_running && !(GetAsyncKeyState(VK_END)&1)) Sleep(100);
     if(g_imguiInit){
-        ImGui_ImplDX11_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
+        ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
         if(g_hwnd && oWndProc) SetWindowLongPtrA(g_hwnd,GWLP_WNDPROC,(LONG_PTR)oWndProc);
         if(g_rtv) g_rtv->Release();
     }
@@ -514,9 +583,6 @@ void MainThread(HMODULE hMod) {
 }
 
 BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
-    if(reason==DLL_PROCESS_ATTACH){
-        DisableThreadLibraryCalls(hMod);
-        CreateThread(nullptr,0,(LPTHREAD_START_ROUTINE)MainThread,hMod,0,nullptr);
-    }
+    if(reason==DLL_PROCESS_ATTACH){ DisableThreadLibraryCalls(hMod); CreateThread(nullptr,0,(LPTHREAD_START_ROUTINE)MainThread,hMod,0,nullptr); }
     return TRUE;
 }
