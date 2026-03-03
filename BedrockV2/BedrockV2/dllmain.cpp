@@ -59,6 +59,7 @@ struct Module {
     virtual void onToggle() {}
     virtual void onTick()   {}
     virtual void onRender() {}
+    virtual void onSettingsUI() {} // Dropdown settings UI
 
     std::string getKeyName() const {
         if (!keybind) return "None";
@@ -69,7 +70,7 @@ struct Module {
 };
 
 // ============================================================
-// KEYSTROKES MODULE (với kéo thả)
+// KEYSTROKES MODULE
 // ============================================================
 struct Keystrokes : Module {
     std::deque<std::chrono::steady_clock::time_point> lClicks, rClicks;
@@ -78,7 +79,7 @@ struct Keystrokes : Module {
     bool dragging = false;
     float dragOffX = 0, dragOffY = 0;
 
-    Keystrokes() : Module("Keystrokes", "WASD + LMB/RMB + CPS (keo tha duoc)", Category::HUD) { enabled = true; }
+    Keystrokes() : Module("Keystrokes", "WASD + LMB/RMB + CPS (Shift+Drag de di chuyen)", Category::HUD) { enabled = true; }
 
     int cps(std::deque<std::chrono::steady_clock::time_point>& q) {
         auto now = std::chrono::steady_clock::now();
@@ -124,11 +125,9 @@ struct Keystrokes : Module {
         float totalW = k*3 + g*2;
         float totalH = k*2 + g + mh + g;
 
-        // Kéo thả khi giữ Shift + Click trái vào vùng Keystrokes
         if (!g_guiOpen) {
             float mx = io.MousePos.x, my = io.MousePos.y;
-            bool inBox = mx >= px && mx <= px+totalW && my >= py && my <= py+totalH;
-
+            bool inBox = mx>=px && mx<=px+totalW && my>=py && my<=py+totalH;
             if (inBox && GetAsyncKeyState(VK_SHIFT)&0x8000 && GetAsyncKeyState(VK_LBUTTON)&0x8000) {
                 if (!dragging) { dragging=true; dragOffX=mx-px; dragOffY=my-py; }
             }
@@ -136,15 +135,14 @@ struct Keystrokes : Module {
             if (dragging) { px = mx-dragOffX; py = my-dragOffY; }
         }
 
-        drawKey(dl, px+k+g,      py,         k,  k,  "W",   W);
-        drawKey(dl, px,           py+k+g,     k,  k,  "A",   A);
-        drawKey(dl, px+k+g,      py+k+g,     k,  k,  "S",   S);
-        drawKey(dl, px+(k+g)*2,  py+k+g,     k,  k,  "D",   D);
+        drawKey(dl, px+k+g,     py,         k,  k,  "W",   W);
+        drawKey(dl, px,          py+k+g,     k,  k,  "A",   A);
+        drawKey(dl, px+k+g,     py+k+g,     k,  k,  "S",   S);
+        drawKey(dl, px+(k+g)*2, py+k+g,     k,  k,  "D",   D);
         float mw = totalW/2 - g/2;
-        drawKey(dl, px,           py+(k+g)*2, mw, mh, "LMB", L, cps(lClicks));
-        drawKey(dl, px+mw+g,     py+(k+g)*2, mw, mh, "RMB", R, cps(rClicks));
+        drawKey(dl, px,          py+(k+g)*2, mw, mh, "LMB", L, cps(lClicks));
+        drawKey(dl, px+mw+g,    py+(k+g)*2, mw, mh, "RMB", R, cps(rClicks));
 
-        // Hint kéo thả
         if (!g_guiOpen) {
             auto hs = ImGui::CalcTextSize("Shift+Drag");
             dl->AddText({px+totalW/2-hs.x/2, py-14}, IM_COL32(150,150,150,120), "Shift+Drag");
@@ -173,9 +171,9 @@ struct FPSDisplay : Module {
         int fps = (int)smooth;
 
         ImU32 col = fps>=60 ? IM_COL32(0,255,128,255) : fps>=30 ? IM_COL32(255,200,0,255) : IM_COL32(255,60,60,255);
+        auto* dl = ImGui::GetBackgroundDrawList();
         char buf[32]; snprintf(buf,32,"FPS: %d",fps);
         auto ts = ImGui::CalcTextSize(buf);
-        auto* dl = ImGui::GetBackgroundDrawList();
         dl->AddRectFilled({px-8,py-5},{px+ts.x+8,py+ts.y+5}, IM_COL32(20,20,20,180), 6);
         dl->AddRect({px-8,py-5},{px+ts.x+8,py+ts.y+5}, IM_COL32(60,60,60,200), 6, 0, 1);
         dl->AddText({px,py}, IM_COL32(200,200,200,255), "FPS: ");
@@ -204,9 +202,9 @@ struct PingDisplay : Module {
     void onRender() override {
         int p = ping.load();
         ImU32 col = p<60 ? IM_COL32(0,255,128,255) : p<120 ? IM_COL32(255,200,0,255) : IM_COL32(255,60,60,255);
+        auto* dl = ImGui::GetBackgroundDrawList();
         char buf[32]; snprintf(buf,32,"Ping: %dms",p);
         auto ts = ImGui::CalcTextSize(buf);
-        auto* dl = ImGui::GetBackgroundDrawList();
         dl->AddRectFilled({px-8,py-5},{px+ts.x+8,py+ts.y+5}, IM_COL32(20,20,20,180), 6);
         dl->AddRect({px-8,py-5},{px+ts.x+8,py+ts.y+5}, IM_COL32(60,60,60,200), 6, 0, 1);
         dl->AddText({px,py}, IM_COL32(200,200,200,255), "Ping: ");
@@ -218,86 +216,108 @@ struct PingDisplay : Module {
 };
 
 // ============================================================
-// AIM ASSIST MODULE
+// AUTO CLICK MODULE
 // ============================================================
-struct AimAssist : Module {
-    // Settings
-    float strength  = 0.08f;  // 0.0 - 1.0 (mạnh đến đâu)
-    float fov       = 90.0f;  // Chỉ hoạt động khi chuột trong vòng FOV này (pixels)
-    bool  onlyLMB   = true;   // Chỉ hoạt động khi giữ LMB (đang đánh)
+struct AutoClick : Module {
+    // Config
+    float cps       = 12.0f;   // clicks per second
+    int   button    = 0;       // 0=LMB, 1=RMB, 2=Both
+    bool  holdOnly  = true;    // chỉ click khi giữ chuột
 
     // State
-    POINT lastMouse = {};
-    bool  active    = false;
+    std::atomic<bool> run{false};
+    std::thread thr;
+    bool showSettings = false;
 
-    AimAssist() : Module("AimAssist", "Ho tro aim vao player", Category::Utility) {}
+    const char* buttonNames[3] = { "LMB", "RMB", "Both" };
 
-    void onRender() override {
-        // Chỉ hoạt động khi:
-        // 1. Không mở GUI
-        // 2. Đang giữ LMB (nếu onlyLMB = true)
-        if (g_guiOpen) return;
-        if (onlyLMB && !(GetAsyncKeyState(VK_LBUTTON)&0x8000)) return;
+    AutoClick() : Module("AutoClick", "Tu dong click chuot", Category::Utility) {}
 
-        // Lấy vị trí chuột hiện tại
-        POINT cur;
-        GetCursorPos(&cur);
+    void onToggle() override {
+        if (enabled) {
+            run = true;
+            thr = std::thread([this] {
+                while (run) {
+                    float interval = 1000.0f / cps;
+                    Sleep((DWORD)interval);
 
-        // Lấy center màn hình (crosshair)
-        auto& io = ImGui::GetIO();
-        float cx = io.DisplaySize.x / 2.0f;
-        float cy = io.DisplaySize.y / 2.0f;
+                    if (!enabled) continue;
+                    if (g_guiOpen) continue;
 
-        // Tìm entity gần crosshair nhất trong game window
-        // Vì không đọc memory, mình dùng cách: 
-        // Scan màn hình tìm pixel màu của nametag (trắng) hoặc entity
-        // Đây là soft aim - kéo chuột nhẹ về phía center khi có target
+                    bool doClick = !holdOnly;
+                    if (holdOnly) {
+                        if (button == 0 && (GetAsyncKeyState(VK_LBUTTON)&0x8000)) doClick = true;
+                        if (button == 1 && (GetAsyncKeyState(VK_RBUTTON)&0x8000)) doClick = true;
+                        if (button == 2 && ((GetAsyncKeyState(VK_LBUTTON)|GetAsyncKeyState(VK_RBUTTON))&0x8000)) doClick = true;
+                    }
 
-        // Simple version: smooth pull về crosshair khi đang combat
-        // Thực tế cần entity list từ memory để làm đúng
-        // Hiện tại: khi giữ LMB, smooth chuột về phía center một chút
-        // giúp aim ổn định hơn khi đánh gần
+                    if (!doClick) continue;
 
-        float dx = cx - cur.x;
-        float dy = cy - cur.y;
-        float dist = sqrtf(dx*dx + dy*dy);
-
-        // Chỉ assist khi chuột trong FOV
-        if (dist < fov && dist > 2.0f) {
-            float moveX = dx * strength;
-            float moveY = dy * strength * 0.5f; // vertical nhẹ hơn
-            mouse_event(MOUSEEVENTF_MOVE, (DWORD)moveX, (DWORD)moveY, 0, 0);
+                    if (button == 0 || button == 2) {
+                        mouse_event(MOUSEEVENTF_LEFTDOWN,  0, 0, 0, 0);
+                        Sleep(10);
+                        mouse_event(MOUSEEVENTF_LEFTUP,    0, 0, 0, 0);
+                    }
+                    if (button == 1 || button == 2) {
+                        mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0);
+                        Sleep(10);
+                        mouse_event(MOUSEEVENTF_RIGHTUP,   0, 0, 0, 0);
+                    }
+                }
+            });
+        } else {
+            run = false;
+            if (thr.joinable()) thr.join();
         }
     }
 
-    // Render settings trong GUI
-    void renderSettings() {
-        ImGui::SliderFloat("Strength##aa", &strength, 0.01f, 0.3f, "%.2f");
-        ImGui::SliderFloat("FOV##aa",      &fov,      20.0f, 200.0f, "%.0fpx");
-        ImGui::Checkbox("Only when LMB##aa", &onlyLMB);
+    void onSettingsUI() override {
+        ImGui::Spacing();
+        ImGui::Indent(8);
 
-        // FOV circle preview
-        auto* dl = ImGui::GetWindowDrawList();
-        auto& io = ImGui::GetIO();
-        dl->AddCircle(
-            {io.DisplaySize.x/2, io.DisplaySize.y/2},
-            fov, IM_COL32(255,100,100,80), 64, 1.5f
-        );
+        // CPS slider
+        ImGui::Text("CPS:");
+        ImGui::SetNextItemWidth(140);
+        if (ImGui::SliderFloat("##cps", &cps, 0.1f, 20.0f, "%.1f CPS"))
+            cps = std::max(0.1f, std::min(20.0f, cps));
+
+        // Button selector
+        ImGui::Text("Button:");
+        ImGui::SetNextItemWidth(140);
+        if (ImGui::BeginCombo("##btn", buttonNames[button])) {
+            for (int i = 0; i < 3; i++) {
+                bool sel = (button == i);
+                if (ImGui::Selectable(buttonNames[i], sel))
+                    button = i;
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        // Hold only checkbox
+        ImGui::Checkbox("Hold to activate##ac", &holdOnly);
+        ImGui::SetItemTooltip("Chi click khi dang giu phim chuot");
+
+        // Keybind
+        ImGui::Text("Keybind: %s", getKeyName().c_str());
+
+        ImGui::Unindent(8);
+        ImGui::Spacing();
     }
+
+    ~AutoClick() { run=false; if(thr.joinable()) thr.join(); }
 };
 
 // ============================================================
 // MODULE MANAGER
 // ============================================================
 static std::vector<Module*> g_modules;
-static AimAssist* g_aimAssist = nullptr;
 
 void ModuleManager_Init() {
     g_modules.push_back(new Keystrokes());
     g_modules.push_back(new FPSDisplay());
     g_modules.push_back(new PingDisplay());
-    g_aimAssist = new AimAssist();
-    g_modules.push_back(g_aimAssist);
+    g_modules.push_back(new AutoClick());
     for(auto* m : g_modules) if(m->enabled) m->onToggle();
 }
 
@@ -327,8 +347,9 @@ Module* ModuleManager_Find(const std::string& name) {
 // ============================================================
 static bool    g_waitBind   = false;
 static Module* g_bindTarget = nullptr;
+static std::map<Module*, bool> g_expanded; // track expanded settings
 
-static std::map<Category, ImVec4>     catColor = {
+static std::map<Category, ImVec4>      catColor = {
     {Category::HUD,     {0.2f,0.6f,1.f,1.f}},
     {Category::Visual,  {0.4f,1.f,0.5f,1.f}},
     {Category::Utility, {1.f,0.7f,0.2f,1.f}},
@@ -348,18 +369,20 @@ void RenderClickGUI() {
 
     for (auto& [cat, pos] : catPos) {
         ImGui::SetNextWindowPos(pos, ImGuiCond_Once);
-        ImGui::SetNextWindowSize({180,400}, ImGuiCond_Once);
+        ImGui::SetNextWindowSize({185,450}, ImGuiCond_Once);
         ImGui::PushStyleColor(ImGuiCol_WindowBg,      {0.08f,0.08f,0.08f,0.95f});
         ImGui::PushStyleColor(ImGuiCol_TitleBgActive, {0.1f,0.1f,0.1f,1.f});
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,  4.f);
 
         std::string wid = std::string("##") + catName[cat];
-        ImGui::Begin(wid.c_str(), nullptr, ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize);
+        ImGui::Begin(wid.c_str(), nullptr,
+            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar);
 
+        // Category title
         ImGui::PushStyleColor(ImGuiCol_Text, catColor[cat]);
         float tw = ImGui::CalcTextSize(catName[cat]).x;
-        ImGui::SetCursorPosX((180-tw)/2);
+        ImGui::SetCursorPosX((185-tw)/2);
         ImGui::Text("%s", catName[cat]);
         ImGui::PopStyleColor();
         ImGui::Separator(); ImGui::Spacing();
@@ -367,6 +390,11 @@ void RenderClickGUI() {
         for (auto* m : g_modules) {
             if (m->cat != cat) continue;
             bool en = m->enabled;
+            bool hasSettings = false;
+            // Check if module has settings (AutoClick does)
+            if (dynamic_cast<AutoClick*>(m)) hasSettings = true;
+
+            // Toggle button
             if (en) {
                 ImGui::PushStyleColor(ImGuiCol_Button,        {0.15f,0.45f,0.85f,1.f});
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.20f,0.55f,0.95f,1.f});
@@ -376,20 +404,41 @@ void RenderClickGUI() {
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.25f,0.25f,0.25f,1.f});
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive,  {0.12f,0.12f,0.12f,1.f});
             }
+
             std::string lbl = m->name;
             if (m->keybind) lbl += " [" + m->getKeyName() + "]";
-            if (ImGui::Button(lbl.c_str(), {ImGui::GetContentRegionAvail().x, 30}))
-                m->toggle();
-            ImGui::PopStyleColor(3);
 
-            // AimAssist settings inline
-            if (en && m == g_aimAssist) {
-                ImGui::Indent(8);
-                g_aimAssist->renderSettings();
-                ImGui::Unindent(8);
-                ImGui::Spacing();
+            // Nếu có settings: nút toggle nhỏ hơn + nút mũi tên
+            if (hasSettings) {
+                float arrowW = 28.f;
+                float btnW = ImGui::GetContentRegionAvail().x - arrowW - 4;
+                if (ImGui::Button(lbl.c_str(), {btnW, 30})) m->toggle();
+                ImGui::SameLine(0, 4);
+
+                bool& exp = g_expanded[m];
+                ImGui::PushStyleColor(ImGuiCol_Button,        {0.22f,0.22f,0.22f,1.f});
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.35f,0.35f,0.35f,1.f});
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,  {0.15f,0.15f,0.15f,1.f});
+                std::string arrowLbl = std::string(exp ? "v" : ">") + "##arr_" + m->name;
+                if (ImGui::Button(arrowLbl.c_str(), {arrowW, 30})) exp = !exp;
+                ImGui::PopStyleColor(3);
+
+                // Dropdown settings
+                if (exp) {
+                    ImGui::PushStyleColor(ImGuiCol_ChildBg, {0.12f,0.12f,0.12f,1.f});
+                    ImGui::BeginChild(("##set_"+m->name).c_str(), {ImGui::GetContentRegionAvail().x, 130}, true);
+                    m->onSettingsUI();
+                    ImGui::EndChild();
+                    ImGui::PopStyleColor();
+                }
+            } else {
+                if (ImGui::Button(lbl.c_str(), {ImGui::GetContentRegionAvail().x, 30}))
+                    m->toggle();
             }
 
+            ImGui::PopStyleColor(3);
+
+            // Right click context menu
             std::string pid = "ctx_" + m->name;
             if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                 ImGui::OpenPopup(pid.c_str());
@@ -398,7 +447,9 @@ void RenderClickGUI() {
                 if (ImGui::MenuItem("Clear Keybind")) { m->keybind=0; }
                 ImGui::EndPopup();
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", m->desc.c_str());
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup))
+                ImGui::SetTooltip("%s", m->desc.c_str());
+
             ImGui::Spacing();
         }
         ImGui::End();
@@ -406,6 +457,7 @@ void RenderClickGUI() {
         ImGui::PopStyleColor(2);
     }
 
+    // Bind popup
     if (g_waitBind && g_bindTarget) {
         ImGui::SetNextWindowPos({io.DisplaySize.x/2-120, io.DisplaySize.y/2-40}, ImGuiCond_Always);
         ImGui::SetNextWindowSize({240,80}, ImGuiCond_Always);
@@ -449,15 +501,13 @@ bool HandleCommand(const std::string& msg) {
     if(tok.empty()) return false;
     std::string cmd=tok[0]; for(auto& c:cmd) c=toupper(c);
     auto showMsg=[](const std::string& s){ OutputDebugStringA(("[Client] "+s+"\n").c_str()); };
-
     if(cmd=="BIND"){
         if(tok.size()<3){ showMsg("Usage: .bind [module] [key]"); return true; }
         auto* m=ModuleManager_Find(tok[1]);
         if(!m){ showMsg("Module not found!"); return true; }
         std::string key=tok[2]; for(auto& c:key) c=toupper(c);
         if(keyMap.find(key)==keyMap.end()){ showMsg("Key not found!"); return true; }
-        m->keybind=keyMap[key];
-        showMsg("Bound "+m->name+" to "+key); return true;
+        m->keybind=keyMap[key]; showMsg("Bound "+m->name+" to "+key); return true;
     }
     if(cmd=="UNBIND"){
         if(tok.size()<2) return true;
@@ -496,16 +546,23 @@ static LRESULT CALLBACK HookedWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 void ApplyStyle() {
     ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowRounding=8; s.FrameRounding=4;
+    s.WindowRounding=8; s.FrameRounding=4; s.ItemSpacing={8,6};
     auto* c = s.Colors;
     c[ImGuiCol_WindowBg]      = {0.08f,0.08f,0.08f,0.95f};
+    c[ImGuiCol_ChildBg]       = {0.10f,0.10f,0.10f,1.f};
     c[ImGuiCol_TitleBgActive] = {0.12f,0.12f,0.12f,1.f};
     c[ImGuiCol_Border]        = {0.25f,0.25f,0.25f,0.6f};
     c[ImGuiCol_Button]        = {0.18f,0.18f,0.18f,1.f};
     c[ImGuiCol_ButtonHovered] = {0.25f,0.45f,0.85f,1.f};
     c[ImGuiCol_Text]          = {0.9f,0.9f,0.9f,1.f};
     c[ImGuiCol_SliderGrab]    = {0.25f,0.45f,0.85f,1.f};
+    c[ImGuiCol_SliderGrabActive] = {0.3f,0.55f,0.95f,1.f};
     c[ImGuiCol_FrameBg]       = {0.15f,0.15f,0.15f,1.f};
+    c[ImGuiCol_FrameBgHovered]= {0.20f,0.20f,0.20f,1.f};
+    c[ImGuiCol_Header]        = {0.15f,0.40f,0.80f,0.5f};
+    c[ImGuiCol_HeaderHovered] = {0.20f,0.45f,0.85f,0.8f};
+    c[ImGuiCol_CheckMark]     = {0.25f,0.55f,0.95f,1.f};
+    c[ImGuiCol_Separator]     = {0.3f,0.3f,0.3f,0.6f};
 }
 
 HRESULT __stdcall HookedPresent(IDXGISwapChain* chain, UINT sync, UINT flags) {
