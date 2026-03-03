@@ -120,10 +120,11 @@ struct Keystrokes : Module {
         bool W = GetAsyncKeyState('W')&0x8000, A = GetAsyncKeyState('A')&0x8000;
         bool S = GetAsyncKeyState('S')&0x8000, D = GetAsyncKeyState('D')&0x8000;
         bool L = GetAsyncKeyState(VK_LBUTTON)&0x8000, R = GetAsyncKeyState(VK_RBUTTON)&0x8000;
+        bool Space = GetAsyncKeyState(VK_SPACE)&0x8000;
 
-        float g = 4, k = 40, mh = 55;
+        float g = 4, k = 40, mh = 55, sh = 25;
         float totalW = k*3 + g*2;
-        float totalH = k*2 + g + mh + g;
+        float totalH = k*2 + g + mh + g + sh + g;
 
         if (!g_guiOpen) {
             float mx = io.MousePos.x, my = io.MousePos.y;
@@ -142,6 +143,8 @@ struct Keystrokes : Module {
         float mw = totalW/2 - g/2;
         drawKey(dl, px,          py+(k+g)*2, mw, mh, "LMB", L, cps(lClicks));
         drawKey(dl, px+mw+g,    py+(k+g)*2, mw, mh, "RMB", R, cps(rClicks));
+        
+        drawKey(dl, px,          py+(k+g)*2 + mh + g, totalW, sh, "       [ SPACE ]       ", Space);
 
         if (!g_guiOpen) {
             auto hs = ImGui::CalcTextSize("Shift+Drag");
@@ -242,7 +245,7 @@ struct AutoClick : Module {
                     Sleep((DWORD)interval);
 
                     if (!enabled) continue;
-                    if (g_guiOpen) continue;
+                    if (g_guiOpen || GetForegroundWindow() != g_hwnd) continue;
 
                     bool doClick = !holdOnly;
                     if (holdOnly) {
