@@ -52,33 +52,32 @@ jobs:
 
       # ── 4. Write Il2CppDumper config.json ───────────────────────────────────
       #
-      #  KEY FIX #1: Without this file, Il2CppDumper calls Console.ReadKey()
-      #  on ANY error (even a wrong path), which crashes in a non-TTY CI runner
-      #  with exit code 134, hiding the real error message entirely.
+      #  WHY: Il2CppDumper calls Console.ReadKey() on any error in its default
+      #  mode, which crashes non-TTY CI runners with exit 134, hiding the real
+      #  error. "forceSave": true disables that interactive prompt entirely.
       #
-      #  "forceSave": true  → never prompt "Press any key", always write output
-      #  "ignoreJsonFormatError": true → don't abort on malformed output JSON
+      #  NOTE: We use printf instead of a heredoc (cat << EOF) because a bare
+      #  EOF terminator at column 0 inside a GitHub Actions "run: |" block
+      #  ends the YAML block scalar early, causing a workflow parse error.
       #
       - name: Write Il2CppDumper config.json
         run: |
           DLL_DIR=$(dirname "$(find DumperTool -name 'Il2CppDumper.dll' -print -quit)")
           echo "Placing config.json in: $DLL_DIR"
 
-          cat > "${DLL_DIR}/config.json" << 'EOF'
-{
-  "forceSave": true,
-  "ignoreJsonFormatError": true,
-  "dumpMethod": true,
-  "dumpField": true,
-  "dumpProperty": true,
-  "dumpAttribute": true,
-  "dumpFieldOffset": true,
-  "dumpMethodOffset": true,
-  "dumpTypeDefIndex": true,
-  "generating_script_json": true,
-  "scriptJson": true
-}
-EOF
+          printf '%s\n' \
+            '{' \
+            '  "forceSave": true,' \
+            '  "ignoreJsonFormatError": true,' \
+            '  "dumpMethod": true,' \
+            '  "dumpField": true,' \
+            '  "dumpProperty": true,' \
+            '  "dumpAttribute": true,' \
+            '  "dumpFieldOffset": true,' \
+            '  "dumpMethodOffset": true,' \
+            '  "dumpTypeDefIndex": true,' \
+            '  "scriptJson": true' \
+            '}' > "${DLL_DIR}/config.json"
 
           echo "config.json written:"
           cat "${DLL_DIR}/config.json"
@@ -93,7 +92,7 @@ EOF
           target: 'Data.zip'
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 6. Extract & inspect Data.zip ───────────────────────────────────────
+      # ── 6. Extract & verify Data.zip ────────────────────────────────────────
       - name: Extract and inspect game data
         run: |
           FILE_SIZE=$(stat -c%s "Data.zip")
@@ -104,22 +103,14 @@ EOF
           fi
 
           unzip -q Data.zip -d GameData
-          echo ""
           echo "All extracted files:"
           find GameData -type f | sort
 
-      # ── 7. Locate files and inspect file headers ─────────────────────────────
+      # ── 7. Locate files and inspect magic bytes ──────────────────────────────
       #
-      #  KEY FIX #2: We now print magic bytes of both files so you can see
-      #  immediately in the logs which failure case you hit:
-      #
-      #  global-metadata.dat magic bytes:
-      #    af 1b b1 fa  → VALID (unencrypted) — dumper should work
-      #    anything else → ENCRYPTED — dumper cannot run, need Frida/device dump
-      #
-      #  UnityFramework / binary magic bytes:
-      #    cf fa ed fe  → valid Mach-O arm64 (iOS)
-      #    7f 45 4c 46  → valid ELF (Android libil2cpp.so)
+      #  Checks global-metadata.dat header to detect encryption:
+      #    af 1b b1 fa  → valid / unencrypted  ✓
+      #    anything else → encrypted (need Frida live dump instead)
       #
       - name: Locate files and inspect file headers
         id: locate
@@ -133,11 +124,9 @@ EOF
 
           if [ -z "$UNITY_PATH" ]; then
             echo "::error::No IL2CPP binary found (tried UnityFramework, libil2cpp.so, GameAssembly.dll)"
-            echo "Files in GameData/:"
             find GameData -type f | sort
             exit 1
           fi
-
           echo "Found binary : $UNITY_PATH"
           echo "Magic bytes  : $(xxd -l 4 "$UNITY_PATH" | head -1)"
           echo "::endgroup::"
@@ -147,11 +136,9 @@ EOF
 
           if [ -z "$META_PATH" ]; then
             echo "::error::global-metadata.dat not found in GameData/"
-            echo "Files in GameData/:"
             find GameData -type f | sort
             exit 1
           fi
-
           echo "Found metadata : $META_PATH"
           echo "Magic bytes    : $(xxd -l 4 "$META_PATH" | head -1)"
 
@@ -159,13 +146,11 @@ EOF
           echo "Raw hex        : $MAGIC_HEX"
 
           if [ "$MAGIC_HEX" != "af1bb1fa" ]; then
-            echo ""
-            echo "::warning::global-metadata.dat does NOT start with 'af 1b b1 fa'."
-            echo "::warning::The metadata appears to be ENCRYPTED by the game's anti-tamper protection."
+            echo "::warning::Metadata does NOT start with 'af 1b b1 fa' — likely ENCRYPTED."
             echo "::warning::Il2CppDumper cannot dump encrypted metadata offline."
-            echo "::warning::You will need a live Frida-based dump from a real device instead."
+            echo "::warning::You will need a Frida-based live device dump instead."
           else
-            echo "Metadata magic bytes valid ✓ (unencrypted)"
+            echo "Metadata magic bytes valid (unencrypted) ✓"
           fi
           echo "::endgroup::"
 
@@ -178,13 +163,13 @@ EOF
         run: |
           DLL_PATH=$(find DumperTool -type f -name "Il2CppDumper.dll" -print -quit)
           if [ -z "$DLL_PATH" ]; then
-            echo "::error::Il2CppDumper.dll not found in DumperTool/:"
+            echo "::error::Il2CppDumper.dll not found:"
             find DumperTool -type f | sort
             exit 1
           fi
           DLL_DIR=$(dirname "$DLL_PATH")
-          echo "DLL      : $DLL_PATH"
-          echo "DLL dir  : $DLL_DIR"
+          echo "DLL     : $DLL_PATH"
+          echo "DLL dir : $DLL_DIR"
           echo "dll_path=$DLL_PATH" >> "$GITHUB_OUTPUT"
           echo "dll_dir=$DLL_DIR"   >> "$GITHUB_OUTPUT"
 
@@ -201,19 +186,16 @@ EOF
           echo "Binary           : $UNITY_PATH"
           echo "Metadata         : $META_PATH"
           echo "Output dir       : Output/"
-          echo ""
 
-          # Belt-and-suspenders: redirect stdin from /dev/null so that if
-          # Console.ReadKey() is somehow still reached it gets EOF instead of
-          # crashing with exit 134. The config.json forceSave:true is the
-          # primary fix; this is the safety net behind it.
+          # stdin < /dev/null: safety net so Console.ReadKey() gets EOF
+          # instead of crashing with exit 134 if it is ever reached despite
+          # forceSave:true in config.json
           dotnet "$DLL_PATH" \
             "$UNITY_PATH" \
             "$META_PATH" \
             "Output" \
             < /dev/null
 
-          echo ""
           echo "Output files generated:"
           find Output -type f | sort
 
@@ -221,14 +203,12 @@ EOF
       - name: Verify dumper output
         run: |
           if [ ! -f "Output/script.json" ]; then
-            echo "::error::script.json was not produced — the dump likely failed."
-            echo "Files in Output/ (if any):"
+            echo "::error::script.json not produced — dump likely failed."
             find Output -type f | sort
             exit 1
           fi
           SCRIPT_SIZE=$(stat -c%s "Output/script.json")
           echo "script.json found ✓ (${SCRIPT_SIZE} bytes)"
-          echo "All output files:"
           find Output -type f | sort
 
       # ── 11. Upload artifact ───────────────────────────────────────────────────
