@@ -8,48 +8,51 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Tạo thư mục làm việc
-        run: mkdir dumper_workspace
-
-      - name: Tự động xin link & Tải vũ khí (Bất tử)
+      - name: Setup Workspace
         run: |
-          cd dumper_workspace
-          echo "Đang cầu viện API Github để lấy link gốc..."
-          
-          # Dùng API cào thẳng link file Zip mới nhất của tác giả Perfare
+          mkdir -p work/output
+          mkdir -p work/DumperTool
+          mkdir -p work/GameData
+
+      - name: Download Il2CppDumper
+        run: |
+          cd work
           DOWNLOAD_URL=$(curl -s https://api.github.com/repos/Perfare/Il2CppDumper/releases/latest | grep "browser_download_url" | grep -i "\.zip" | head -n 1 | cut -d '"' -f 4)
-          
-          echo "Đã khóa mục tiêu: $DOWNLOAD_URL"
-          
-          # Tải về bằng link chuẩn xác 100%
           curl -L -o dumper.zip "$DOWNLOAD_URL"
           unzip -q dumper.zip -d DumperTool
 
-      - name: Kéo file Game từ kho chứa của Pháp sư
+      - name: Download & Extract Game Data
         run: |
-          cd dumper_workspace
-          # Đã dán link xịn của bác vào đây
+          cd work
+          # Link Release của bác
           curl -L -o data.zip "https://github.com/Mobimi/codespace/releases/download/Data/Data.zip"
+          unzip -o -q data.zip -d GameData
           
-          echo "Đang bung nén cục hàng 200MB..."
-          unzip -q data.zip -d GameData
+          # Liệt kê file để debug (xem trong log Action nếu lỗi)
+          echo "--- Cấu trúc file tìm thấy ---"
+          find GameData -type f
 
-      - name: Đập hộp & Dịch ngược
+      - name: Execute Dumper
         run: |
-          cd dumper_workspace
-          mkdir output
+          cd work
+          # Tự động định vị file (Bất kể thư mục nào)
+          UNITY=$(find GameData -type f -name "UnityFramework" | head -n 1)
+          META=$(find GameData -type f -name "global-metadata.dat" | head -n 1)
           
-          UNITY_FILE=$(find GameData -type f -name "UnityFramework" | head -n 1)
-          META_FILE=$(find GameData -type f -name "global-metadata.dat" | head -n 1)
+          echo "Unity: $UNITY"
+          echo "Metadata: $META"
           
-          echo "Tìm thấy UnityFramework tại: $UNITY_FILE"
-          echo "Tìm thấy Metadata tại: $META_FILE"
-          
-          # Ép máy chủ dùng .NET để chạy tool (Bao mượt trên Linux)
-          dotnet DumperTool/Il2CppDumper.dll "$UNITY_FILE" "$META_FILE" output/ || true
+          if [ -z "$UNITY" ] || [ -z "$META" ]; then
+            echo "LỖI: Thiếu file UnityFramework hoặc global-metadata.dat!"
+            exit 1
+          fi
 
-      - name: Gói Offsets trả về
+          # Chạy dumper
+          dotnet DumperTool/Il2CppDumper.dll "$UNITY" "$META" output/
+
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
           name: LQM-Offsets-Json
-          path: dumper_workspace/output/
+          path: work/output/
+          if-no-files-found: error
