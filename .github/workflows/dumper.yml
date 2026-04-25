@@ -10,31 +10,24 @@ jobs:
   dump:
     runs-on: ubuntu-latest
     permissions:
-      contents: read  # Needed to fetch release assets via GITHUB_TOKEN
+      contents: read
 
     steps:
-      # ── 1. Checkout your repo ────────────────────────────────────────────────
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Setup .NET (required to run Il2CppDumper.dll) ────────────────────
+      # ── 2. Setup .NET ────────────────────────────────────────────────────────
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '6.0.x'   # Il2CppDumper v6.7.x targets .NET 6
+          dotnet-version: '6.0.x'
 
-      # ── 3. Download Il2CppDumper from GitHub Releases (robust method) ────────
-      #    Using the GH CLI (pre-installed on ubuntu-latest) avoids curl redirect
-      #    and User-Agent issues entirely. Falls back to the API-authenticated URL.
+      # ── 3. Download Il2CppDumper ─────────────────────────────────────────────
       - name: Download Il2CppDumper
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::group::Fetching Il2CppDumper release info"
           DUMPER_VERSION="6.7.40"
           DUMPER_ZIP="Il2CppDumper-net6-v${DUMPER_VERSION}.zip"
-
-          # Use the GitHub API so we get a proper authenticated redirect
           DOWNLOAD_URL="https://github.com/Perfare/Il2CppDumper/releases/download/v${DUMPER_VERSION}/${DUMPER_ZIP}"
 
           echo "Downloading: ${DOWNLOAD_URL}"
@@ -46,130 +39,203 @@ jobs:
             --output "${DUMPER_ZIP}" \
             "${DOWNLOAD_URL}"
 
-          # Verify we actually got a zip and not an error page (9 bytes = redirect HTML)
           FILE_SIZE=$(stat -c%s "${DUMPER_ZIP}")
           echo "Downloaded size: ${FILE_SIZE} bytes"
           if [ "$FILE_SIZE" -lt 10000 ]; then
-            echo "::error::Download too small (${FILE_SIZE} bytes) — likely a redirect or 404."
+            echo "::error::Download too small — likely a redirect or 404."
             exit 1
           fi
-          echo "::endgroup::"
 
-          echo "::group::Extracting Il2CppDumper"
           unzip -q "${DUMPER_ZIP}" -d DumperTool
-          echo "Extracted contents:"
+          echo "Extracted Il2CppDumper contents:"
           find DumperTool -type f | sort
-          echo "::endgroup::"
 
-      # ── 4. Download YOUR private Data.zip using dsaltares/fetch-gh-release-asset
+      # ── 4. Write Il2CppDumper config.json ───────────────────────────────────
+      #
+      #  KEY FIX #1: Without this file, Il2CppDumper calls Console.ReadKey()
+      #  on ANY error (even a wrong path), which crashes in a non-TTY CI runner
+      #  with exit code 134, hiding the real error message entirely.
+      #
+      #  "forceSave": true  → never prompt "Press any key", always write output
+      #  "ignoreJsonFormatError": true → don't abort on malformed output JSON
+      #
+      - name: Write Il2CppDumper config.json
+        run: |
+          DLL_DIR=$(dirname "$(find DumperTool -name 'Il2CppDumper.dll' -print -quit)")
+          echo "Placing config.json in: $DLL_DIR"
+
+          cat > "${DLL_DIR}/config.json" << 'EOF'
+{
+  "forceSave": true,
+  "ignoreJsonFormatError": true,
+  "dumpMethod": true,
+  "dumpField": true,
+  "dumpProperty": true,
+  "dumpAttribute": true,
+  "dumpFieldOffset": true,
+  "dumpMethodOffset": true,
+  "dumpTypeDefIndex": true,
+  "generating_script_json": true,
+  "scriptJson": true
+}
+EOF
+
+          echo "config.json written:"
+          cat "${DLL_DIR}/config.json"
+
+      # ── 5. Download your private Data.zip ───────────────────────────────────
       - name: Download Data.zip from private release
         uses: dsaltares/fetch-gh-release-asset@1.1.2
         with:
-          repo: ${{ github.repository }}   # Same repo (public or private)
-          version: 'tags/Data'             # Your release tag name
-          file: 'Data.zip'                 # Asset name inside the release
-          target: 'Data.zip'              # Where to save it on the runner
+          repo: ${{ github.repository }}
+          version: 'tags/Data'
+          file: 'Data.zip'
+          target: 'Data.zip'
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 5. Verify & extract Data.zip ────────────────────────────────────────
-      - name: Extract game data files
+      # ── 6. Extract & inspect Data.zip ───────────────────────────────────────
+      - name: Extract and inspect game data
         run: |
-          echo "::group::Verifying Data.zip"
           FILE_SIZE=$(stat -c%s "Data.zip")
           echo "Data.zip size: ${FILE_SIZE} bytes"
           if [ "$FILE_SIZE" -lt 100 ]; then
-            echo "::error::Data.zip download failed or is empty."
+            echo "::error::Data.zip is empty or failed to download."
             exit 1
           fi
-          echo "::endgroup::"
 
-          echo "::group::Extracting Data.zip"
           unzip -q Data.zip -d GameData
-          echo "Extracted contents:"
+          echo ""
+          echo "All extracted files:"
           find GameData -type f | sort
-          echo "::endgroup::"
 
-      # ── 6. Locate the required files (handles any nested folder structure) ───
-      - name: Locate UnityFramework and global-metadata.dat
+      # ── 7. Locate files and inspect file headers ─────────────────────────────
+      #
+      #  KEY FIX #2: We now print magic bytes of both files so you can see
+      #  immediately in the logs which failure case you hit:
+      #
+      #  global-metadata.dat magic bytes:
+      #    af 1b b1 fa  → VALID (unencrypted) — dumper should work
+      #    anything else → ENCRYPTED — dumper cannot run, need Frida/device dump
+      #
+      #  UnityFramework / binary magic bytes:
+      #    cf fa ed fe  → valid Mach-O arm64 (iOS)
+      #    7f 45 4c 46  → valid ELF (Android libil2cpp.so)
+      #
+      - name: Locate files and inspect file headers
         id: locate
         run: |
-          echo "::group::Locating game files"
-
-          # find returns the first match; -print -quit stops after the first hit
-          UNITY_PATH=$(find GameData -type f -name "UnityFramework" -print -quit)
-          META_PATH=$(find GameData -type f -name "global-metadata.dat" -print -quit)
+          echo "::group::Locating IL2CPP binary"
+          UNITY_PATH=$(find GameData -type f \( \
+            -name "UnityFramework" \
+            -o -name "libil2cpp.so" \
+            -o -name "GameAssembly.dll" \
+          \) -print -quit)
 
           if [ -z "$UNITY_PATH" ]; then
-            echo "::error::UnityFramework binary not found inside Data.zip!"
+            echo "::error::No IL2CPP binary found (tried UnityFramework, libil2cpp.so, GameAssembly.dll)"
+            echo "Files in GameData/:"
             find GameData -type f | sort
             exit 1
           fi
 
-          if [ -z "$META_PATH" ]; then
-            echo "::error::global-metadata.dat not found inside Data.zip!"
-            find GameData -type f | sort
-            exit 1
-          fi
-
-          echo "UnityFramework : $UNITY_PATH"
-          echo "global-metadata: $META_PATH"
+          echo "Found binary : $UNITY_PATH"
+          echo "Magic bytes  : $(xxd -l 4 "$UNITY_PATH" | head -1)"
           echo "::endgroup::"
 
-          # Export paths as step outputs for the next step
-          echo "unity_path=$UNITY_PATH"   >> "$GITHUB_OUTPUT"
-          echo "meta_path=$META_PATH"     >> "$GITHUB_OUTPUT"
+          echo "::group::Locating global-metadata.dat"
+          META_PATH=$(find GameData -type f -name "global-metadata.dat" -print -quit)
 
-      # ── 7. Locate Il2CppDumper.dll (handles any nested zip structure) ────────
+          if [ -z "$META_PATH" ]; then
+            echo "::error::global-metadata.dat not found in GameData/"
+            echo "Files in GameData/:"
+            find GameData -type f | sort
+            exit 1
+          fi
+
+          echo "Found metadata : $META_PATH"
+          echo "Magic bytes    : $(xxd -l 4 "$META_PATH" | head -1)"
+
+          MAGIC_HEX=$(xxd -p -l 4 "$META_PATH")
+          echo "Raw hex        : $MAGIC_HEX"
+
+          if [ "$MAGIC_HEX" != "af1bb1fa" ]; then
+            echo ""
+            echo "::warning::global-metadata.dat does NOT start with 'af 1b b1 fa'."
+            echo "::warning::The metadata appears to be ENCRYPTED by the game's anti-tamper protection."
+            echo "::warning::Il2CppDumper cannot dump encrypted metadata offline."
+            echo "::warning::You will need a live Frida-based dump from a real device instead."
+          else
+            echo "Metadata magic bytes valid ✓ (unencrypted)"
+          fi
+          echo "::endgroup::"
+
+          echo "unity_path=$UNITY_PATH" >> "$GITHUB_OUTPUT"
+          echo "meta_path=$META_PATH"   >> "$GITHUB_OUTPUT"
+
+      # ── 8. Locate Il2CppDumper.dll ───────────────────────────────────────────
       - name: Locate Il2CppDumper.dll
         id: locate_dll
         run: |
           DLL_PATH=$(find DumperTool -type f -name "Il2CppDumper.dll" -print -quit)
-
           if [ -z "$DLL_PATH" ]; then
-            echo "::error::Il2CppDumper.dll not found after extraction!"
+            echo "::error::Il2CppDumper.dll not found in DumperTool/:"
             find DumperTool -type f | sort
             exit 1
           fi
-
           DLL_DIR=$(dirname "$DLL_PATH")
-          echo "Il2CppDumper.dll : $DLL_PATH"
-          echo "dll_path=$DLL_PATH"   >> "$GITHUB_OUTPUT"
-          echo "dll_dir=$DLL_DIR"     >> "$GITHUB_OUTPUT"
+          echo "DLL      : $DLL_PATH"
+          echo "DLL dir  : $DLL_DIR"
+          echo "dll_path=$DLL_PATH" >> "$GITHUB_OUTPUT"
+          echo "dll_dir=$DLL_DIR"   >> "$GITHUB_OUTPUT"
 
-      # ── 8. Run Il2CppDumper ──────────────────────────────────────────────────
+      # ── 9. Run Il2CppDumper ──────────────────────────────────────────────────
       - name: Run Il2CppDumper
         run: |
           mkdir -p Output
 
-          echo "Running Il2CppDumper..."
-          echo "  Binary  : ${{ steps.locate.outputs.unity_path }}"
-          echo "  Metadata: ${{ steps.locate.outputs.meta_path }}"
-          echo "  Output  : Output/"
+          UNITY_PATH="${{ steps.locate.outputs.unity_path }}"
+          META_PATH="${{ steps.locate.outputs.meta_path }}"
+          DLL_PATH="${{ steps.locate_dll.outputs.dll_path }}"
 
-          dotnet "${{ steps.locate_dll.outputs.dll_path }}" \
-            "${{ steps.locate.outputs.unity_path }}" \
-            "${{ steps.locate.outputs.meta_path }}" \
-            "Output"
+          echo "Il2CppDumper.dll : $DLL_PATH"
+          echo "Binary           : $UNITY_PATH"
+          echo "Metadata         : $META_PATH"
+          echo "Output dir       : Output/"
+          echo ""
+
+          # Belt-and-suspenders: redirect stdin from /dev/null so that if
+          # Console.ReadKey() is somehow still reached it gets EOF instead of
+          # crashing with exit 134. The config.json forceSave:true is the
+          # primary fix; this is the safety net behind it.
+          dotnet "$DLL_PATH" \
+            "$UNITY_PATH" \
+            "$META_PATH" \
+            "Output" \
+            < /dev/null
 
           echo ""
-          echo "Dumper output files:"
+          echo "Output files generated:"
           find Output -type f | sort
 
-      # ── 9. Verify output before uploading ───────────────────────────────────
+      # ── 10. Verify output ─────────────────────────────────────────────────────
       - name: Verify dumper output
         run: |
           if [ ! -f "Output/script.json" ]; then
-            echo "::error::script.json not found — dumper may have failed. Check logs above."
+            echo "::error::script.json was not produced — the dump likely failed."
+            echo "Files in Output/ (if any):"
+            find Output -type f | sort
             exit 1
           fi
-          echo "script.json found ✓"
-          echo "Total output files: $(find Output -type f | wc -l)"
+          SCRIPT_SIZE=$(stat -c%s "Output/script.json")
+          echo "script.json found ✓ (${SCRIPT_SIZE} bytes)"
+          echo "All output files:"
+          find Output -type f | sort
 
-      # ── 10. Upload Output folder as artifact ─────────────────────────────────
+      # ── 11. Upload artifact ───────────────────────────────────────────────────
       - name: Upload LQM-Offsets artifact
         uses: actions/upload-artifact@v4
         with:
           name: LQM-Offsets
-          path: Output/          # Uploads everything inside the Output folder
+          path: Output/
           if-no-files-found: error
           retention-days: 30
