@@ -11,20 +11,27 @@ jobs:
       - name: Tạo thư mục làm việc
         run: mkdir dumper_workspace
 
-      - name: Tải vũ khí Il2CppDumper (Bản Chuẩn Bất Tử)
+      - name: Tự động xin link & Tải vũ khí (Bất tử)
         run: |
           cd dumper_workspace
-          # Tải bản Universal chuẩn xác 100%
-          curl -L -o dumper.zip https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.40/Il2CppDumper-v6.7.40.zip
+          echo "Đang cầu viện API Github để lấy link gốc..."
+          
+          # Dùng API cào thẳng link file Zip mới nhất của tác giả Perfare
+          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/Perfare/Il2CppDumper/releases/latest | grep "browser_download_url" | grep -i "\.zip" | head -n 1 | cut -d '"' -f 4)
+          
+          echo "Đã khóa mục tiêu: $DOWNLOAD_URL"
+          
+          # Tải về bằng link chuẩn xác 100%
+          curl -L -o dumper.zip "$DOWNLOAD_URL"
           unzip -q dumper.zip -d DumperTool
 
-      - name: Kéo file từ GitHub Releases (Tốc độ VIP)
+      - name: Kéo file Game từ kho chứa của Pháp sư
         run: |
           cd dumper_workspace
-          # NHỚ DÁN LẠI CÁI LINK DATA.ZIP CỦA BÁC VÀO ĐÂY NHA
-          curl -L -o data.zip "LINK_CỦA_BÁC_Ở_ĐÂY"
+          # Đã dán link xịn của bác vào đây
+          curl -L -o data.zip "https://github.com/Mobimi/codespace/releases/download/Data/Data.zip"
           
-          echo "Đang bung nén cục hàng..."
+          echo "Đang bung nén cục hàng 200MB..."
           unzip -q data.zip -d GameData
 
       - name: Đập hộp & Dịch ngược
@@ -32,14 +39,13 @@ jobs:
           cd dumper_workspace
           mkdir output
           
-          # Truy tìm dấu vết 2 file
           UNITY_FILE=$(find GameData -type f -name "UnityFramework" | head -n 1)
           META_FILE=$(find GameData -type f -name "global-metadata.dat" | head -n 1)
           
           echo "Tìm thấy UnityFramework tại: $UNITY_FILE"
           echo "Tìm thấy Metadata tại: $META_FILE"
           
-          # Dùng dotnet để ép máy ảo chạy tool (Cực kỳ uy tín)
+          # Ép máy chủ dùng .NET để chạy tool (Bao mượt trên Linux)
           dotnet DumperTool/Il2CppDumper.dll "$UNITY_FILE" "$META_FILE" output/ || true
 
       - name: Gói Offsets trả về
