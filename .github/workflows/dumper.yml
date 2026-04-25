@@ -1,56 +1,175 @@
-name: Il2Cpp Dumper LQM
+name: IL2CPP Dumper
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'Data'
 
 jobs:
-  decompile:
+  dump:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read  # Needed to fetch release assets via GITHUB_TOKEN
 
     steps:
-      - name: Tạo thư mục
-        run: mkdir -p work/output work/DumperTool work/GameData
+      # ── 1. Checkout your repo ────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Tải Il2CppDumper (Bản chuẩn)
-        run: |
-          cd work
-          # Dùng link này là chuẩn bài, không bị chặn
-          curl -L -o dumper.zip "https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.40/Il2CppDumper-v6.7.40.zip"
-          unzip -q dumper.zip -d DumperTool
-
-      - name: Tải Game Data (Dùng Token chính chủ)
-        uses: dsaltares/fetch-gh-release-asset@master
+      # ── 2. Setup .NET (required to run Il2CppDumper.dll) ────────────────────
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
         with:
-          version: 'tags/Data' # Đây là cái Tag bác đặt lúc tạo Release
-          file: 'Data.zip'     # Tên file của bác trong Release
+          dotnet-version: '6.0.x'   # Il2CppDumper v6.7.x targets .NET 6
+
+      # ── 3. Download Il2CppDumper from GitHub Releases (robust method) ────────
+      #    Using the GH CLI (pre-installed on ubuntu-latest) avoids curl redirect
+      #    and User-Agent issues entirely. Falls back to the API-authenticated URL.
+      - name: Download Il2CppDumper
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::group::Fetching Il2CppDumper release info"
+          DUMPER_VERSION="6.7.40"
+          DUMPER_ZIP="Il2CppDumper-net6-v${DUMPER_VERSION}.zip"
+
+          # Use the GitHub API so we get a proper authenticated redirect
+          DOWNLOAD_URL="https://github.com/Perfare/Il2CppDumper/releases/download/v${DUMPER_VERSION}/${DUMPER_ZIP}"
+
+          echo "Downloading: ${DOWNLOAD_URL}"
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/octet-stream" \
+            -H "User-Agent: GitHubActions/1.0" \
+            --location \
+            --output "${DUMPER_ZIP}" \
+            "${DOWNLOAD_URL}"
+
+          # Verify we actually got a zip and not an error page (9 bytes = redirect HTML)
+          FILE_SIZE=$(stat -c%s "${DUMPER_ZIP}")
+          echo "Downloaded size: ${FILE_SIZE} bytes"
+          if [ "$FILE_SIZE" -lt 10000 ]; then
+            echo "::error::Download too small (${FILE_SIZE} bytes) — likely a redirect or 404."
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Extracting Il2CppDumper"
+          unzip -q "${DUMPER_ZIP}" -d DumperTool
+          echo "Extracted contents:"
+          find DumperTool -type f | sort
+          echo "::endgroup::"
+
+      # ── 4. Download YOUR private Data.zip using dsaltares/fetch-gh-release-asset
+      - name: Download Data.zip from private release
+        uses: dsaltares/fetch-gh-release-asset@1.1.2
+        with:
+          repo: ${{ github.repository }}   # Same repo (public or private)
+          version: 'tags/Data'             # Your release tag name
+          file: 'Data.zip'                 # Asset name inside the release
+          target: 'Data.zip'              # Where to save it on the runner
           token: ${{ secrets.GITHUB_TOKEN }}
-          target: 'work/data.zip'
 
-      - name: Giải nén Game Data
+      # ── 5. Verify & extract Data.zip ────────────────────────────────────────
+      - name: Extract game data files
         run: |
-          cd work
-          unzip -o -q data.zip -d GameData
-          echo "--- Danh sách file ---"
-          find GameData -type f
+          echo "::group::Verifying Data.zip"
+          FILE_SIZE=$(stat -c%s "Data.zip")
+          echo "Data.zip size: ${FILE_SIZE} bytes"
+          if [ "$FILE_SIZE" -lt 100 ]; then
+            echo "::error::Data.zip download failed or is empty."
+            exit 1
+          fi
+          echo "::endgroup::"
 
-      - name: Chạy Dumper
+          echo "::group::Extracting Data.zip"
+          unzip -q Data.zip -d GameData
+          echo "Extracted contents:"
+          find GameData -type f | sort
+          echo "::endgroup::"
+
+      # ── 6. Locate the required files (handles any nested folder structure) ───
+      - name: Locate UnityFramework and global-metadata.dat
+        id: locate
         run: |
-          cd work
-          UNITY=$(find GameData -type f -name "UnityFramework" | head -n 1)
-          META=$(find GameData -type f -name "global-metadata.dat" | head -n 1)
-          
-          echo "Unity: $UNITY"
-          echo "Metadata: $META"
-          
-          if [ -z "$UNITY" ] || [ -z "$META" ]; then
-            echo "LỖI: Không thấy file trong Zip!"
+          echo "::group::Locating game files"
+
+          # find returns the first match; -print -quit stops after the first hit
+          UNITY_PATH=$(find GameData -type f -name "UnityFramework" -print -quit)
+          META_PATH=$(find GameData -type f -name "global-metadata.dat" -print -quit)
+
+          if [ -z "$UNITY_PATH" ]; then
+            echo "::error::UnityFramework binary not found inside Data.zip!"
+            find GameData -type f | sort
             exit 1
           fi
 
-          dotnet DumperTool/Il2CppDumper.dll "$UNITY" "$META" output/
+          if [ -z "$META_PATH" ]; then
+            echo "::error::global-metadata.dat not found inside Data.zip!"
+            find GameData -type f | sort
+            exit 1
+          fi
 
-      - name: Trả hàng Artifacts
+          echo "UnityFramework : $UNITY_PATH"
+          echo "global-metadata: $META_PATH"
+          echo "::endgroup::"
+
+          # Export paths as step outputs for the next step
+          echo "unity_path=$UNITY_PATH"   >> "$GITHUB_OUTPUT"
+          echo "meta_path=$META_PATH"     >> "$GITHUB_OUTPUT"
+
+      # ── 7. Locate Il2CppDumper.dll (handles any nested zip structure) ────────
+      - name: Locate Il2CppDumper.dll
+        id: locate_dll
+        run: |
+          DLL_PATH=$(find DumperTool -type f -name "Il2CppDumper.dll" -print -quit)
+
+          if [ -z "$DLL_PATH" ]; then
+            echo "::error::Il2CppDumper.dll not found after extraction!"
+            find DumperTool -type f | sort
+            exit 1
+          fi
+
+          DLL_DIR=$(dirname "$DLL_PATH")
+          echo "Il2CppDumper.dll : $DLL_PATH"
+          echo "dll_path=$DLL_PATH"   >> "$GITHUB_OUTPUT"
+          echo "dll_dir=$DLL_DIR"     >> "$GITHUB_OUTPUT"
+
+      # ── 8. Run Il2CppDumper ──────────────────────────────────────────────────
+      - name: Run Il2CppDumper
+        run: |
+          mkdir -p Output
+
+          echo "Running Il2CppDumper..."
+          echo "  Binary  : ${{ steps.locate.outputs.unity_path }}"
+          echo "  Metadata: ${{ steps.locate.outputs.meta_path }}"
+          echo "  Output  : Output/"
+
+          dotnet "${{ steps.locate_dll.outputs.dll_path }}" \
+            "${{ steps.locate.outputs.unity_path }}" \
+            "${{ steps.locate.outputs.meta_path }}" \
+            "Output"
+
+          echo ""
+          echo "Dumper output files:"
+          find Output -type f | sort
+
+      # ── 9. Verify output before uploading ───────────────────────────────────
+      - name: Verify dumper output
+        run: |
+          if [ ! -f "Output/script.json" ]; then
+            echo "::error::script.json not found — dumper may have failed. Check logs above."
+            exit 1
+          fi
+          echo "script.json found ✓"
+          echo "Total output files: $(find Output -type f | wc -l)"
+
+      # ── 10. Upload Output folder as artifact ─────────────────────────────────
+      - name: Upload LQM-Offsets artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LQM-Offsets-Json
-          path: work/output/
+          name: LQM-Offsets
+          path: Output/          # Uploads everything inside the Output folder
+          if-no-files-found: error
+          retention-days: 30
