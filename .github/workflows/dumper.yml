@@ -11,37 +11,42 @@ jobs:
       - name: Tạo thư mục
         run: mkdir -p work/output work/DumperTool work/GameData
 
-      - name: Tải Il2CppDumper (Link Cứng)
+      - name: Tải Il2CppDumper (Bản chuẩn)
         run: |
           cd work
-          # Tải thẳng bản v6.7.40 chuẩn nhất
+          # Dùng link này là chuẩn bài, không bị chặn
           curl -L -o dumper.zip "https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.40/Il2CppDumper-v6.7.40.zip"
           unzip -q dumper.zip -d DumperTool
 
-      - name: Tải Game Data từ Release của bác
+      - name: Tải Game Data (Dùng Token chính chủ)
+        uses: dsaltares/fetch-gh-release-asset@master
+        with:
+          version: 'tags/Data' # Đây là cái Tag bác đặt lúc tạo Release
+          file: 'Data.zip'     # Tên file của bác trong Release
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target: 'work/data.zip'
+
+      - name: Giải nén Game Data
         run: |
           cd work
-          curl -L -o data.zip "https://github.com/Mobimi/codespace/releases/download/Data/Data.zip"
           unzip -o -q data.zip -d GameData
-          echo "--- Danh sách file trong GameData ---"
+          echo "--- Danh sách file ---"
           find GameData -type f
 
       - name: Chạy Dumper
         run: |
           cd work
-          # Tự động tìm file
           UNITY=$(find GameData -type f -name "UnityFramework" | head -n 1)
           META=$(find GameData -type f -name "global-metadata.dat" | head -n 1)
           
-          echo "Dùng Unity: $UNITY"
-          echo "Dùng Metadata: $META"
+          echo "Unity: $UNITY"
+          echo "Metadata: $META"
           
           if [ -z "$UNITY" ] || [ -z "$META" ]; then
             echo "LỖI: Không thấy file trong Zip!"
             exit 1
           fi
 
-          # Thực hiện dịch ngược
           dotnet DumperTool/Il2CppDumper.dll "$UNITY" "$META" output/
 
       - name: Trả hàng Artifacts
@@ -49,4 +54,3 @@ jobs:
         with:
           name: LQM-Offsets-Json
           path: work/output/
-          if-no-files-found: error
