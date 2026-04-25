@@ -11,21 +11,21 @@ jobs:
       - name: Tạo thư mục làm việc
         run: mkdir dumper_workspace
 
-      - name: Tải vũ khí Il2CppDumper (Bản Linux)
+      - name: Tải vũ khí Il2CppDumper
         run: |
           cd dumper_workspace
           wget -q -O dumper.zip https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.40/Il2CppDumper-linux-v6.7.40.zip
           unzip -q dumper.zip -d DumperTool
           chmod +x DumperTool/Il2CppDumper
 
-      - name: Kéo file trực tiếp (Tốc độ bàn thờ)
+      - name: Kéo file từ GitHub Releases (Tốc độ VIP)
         run: |
           cd dumper_workspace
-          # Tải thẳng bằng Direct Link của Pháp sư
-          curl -L -o game_files.zip "https://download947.mediafire.com/0akaba6im7hgxJS4CaqNblQjRHZAZBOIx2gGW2h40mbpnWU1gi3CWvybxfbppcFLpcXATHplTZnnO_hka8wwQf7ve0OMqk2Q9WzUzTletqTZmvhQwvjdSbAN2eIrScsbVZ5rLLQahSQHv-y9AaXXrMGPSYbo4vdZoB-NsCo4iZWlnGI/vyu18of4hx2lo8o/Lưu+trữ.zip"
+          # DÁN CÁI LINK BÁC VỪA COPY VÀO TRONG CẶP NGOẶC KÉP NÀY
+          curl -L -o data.zip "LINK_CỦA_BÁC_Ở_ĐÂY"
           
-          echo "Đang bung nén cục hàng 200MB..."
-          unzip -q game_files.zip -d GameData
+          echo "Đang bung nén cục hàng..."
+          unzip -q data.zip -d GameData
 
       - name: Đập hộp & Dịch ngược
         run: |
