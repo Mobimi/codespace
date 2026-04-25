@@ -1,0 +1,49 @@
+name: Il2Cpp Dumper LQM
+
+on:
+  workflow_dispatch:
+
+jobs:
+  decompile:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Tạo thư mục làm việc
+        run: mkdir dumper_workspace
+
+      - name: Tải vũ khí Il2CppDumper (Bản Linux)
+        run: |
+          cd dumper_workspace
+          wget -q -O dumper.zip https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.40/Il2CppDumper-linux-v6.7.40.zip
+          unzip -q dumper.zip -d DumperTool
+          chmod +x DumperTool/Il2CppDumper
+
+      - name: Kéo file trực tiếp (Tốc độ bàn thờ)
+        run: |
+          cd dumper_workspace
+          # Tải thẳng bằng Direct Link của Pháp sư
+          curl -L -o game_files.zip "https://download947.mediafire.com/0akaba6im7hgxJS4CaqNblQjRHZAZBOIx2gGW2h40mbpnWU1gi3CWvybxfbppcFLpcXATHplTZnnO_hka8wwQf7ve0OMqk2Q9WzUzTletqTZmvhQwvjdSbAN2eIrScsbVZ5rLLQahSQHv-y9AaXXrMGPSYbo4vdZoB-NsCo4iZWlnGI/vyu18of4hx2lo8o/Lưu+trữ.zip"
+          
+          echo "Đang bung nén cục hàng 200MB..."
+          unzip -q game_files.zip -d GameData
+
+      - name: Đập hộp & Dịch ngược
+        run: |
+          cd dumper_workspace
+          mkdir output
+          
+          # Truy tìm dấu vết 2 file
+          UNITY_FILE=$(find GameData -type f -name "UnityFramework" | head -n 1)
+          META_FILE=$(find GameData -type f -name "global-metadata.dat" | head -n 1)
+          
+          echo "Tìm thấy UnityFramework tại: $UNITY_FILE"
+          echo "Tìm thấy Metadata tại: $META_FILE"
+          
+          # Đưa lên thớt dịch ngược
+          ./DumperTool/Il2CppDumper "$UNITY_FILE" "$META_FILE" output/ || true
+
+      - name: Gói Offsets trả về
+        uses: actions/upload-artifact@v4
+        with:
+          name: LQM-Offsets-Json
+          path: dumper_workspace/output/
