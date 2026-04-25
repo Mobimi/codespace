@@ -8,49 +8,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup Workspace
-        run: |
-          mkdir -p work/output
-          mkdir -p work/DumperTool
-          mkdir -p work/GameData
+      - name: Tạo thư mục
+        run: mkdir -p work/output work/DumperTool work/GameData
 
-      - name: Download Il2CppDumper
+      - name: Tải Il2CppDumper (Link Cứng)
         run: |
           cd work
-          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/Perfare/Il2CppDumper/releases/latest | grep "browser_download_url" | grep -i "\.zip" | head -n 1 | cut -d '"' -f 4)
-          curl -L -o dumper.zip "$DOWNLOAD_URL"
+          # Tải thẳng bản v6.7.40 chuẩn nhất
+          curl -L -o dumper.zip "https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.40/Il2CppDumper-v6.7.40.zip"
           unzip -q dumper.zip -d DumperTool
 
-      - name: Download & Extract Game Data
+      - name: Tải Game Data từ Release của bác
         run: |
           cd work
-          # Link Release của bác
           curl -L -o data.zip "https://github.com/Mobimi/codespace/releases/download/Data/Data.zip"
           unzip -o -q data.zip -d GameData
-          
-          # Liệt kê file để debug (xem trong log Action nếu lỗi)
-          echo "--- Cấu trúc file tìm thấy ---"
+          echo "--- Danh sách file trong GameData ---"
           find GameData -type f
 
-      - name: Execute Dumper
+      - name: Chạy Dumper
         run: |
           cd work
-          # Tự động định vị file (Bất kể thư mục nào)
+          # Tự động tìm file
           UNITY=$(find GameData -type f -name "UnityFramework" | head -n 1)
           META=$(find GameData -type f -name "global-metadata.dat" | head -n 1)
           
-          echo "Unity: $UNITY"
-          echo "Metadata: $META"
+          echo "Dùng Unity: $UNITY"
+          echo "Dùng Metadata: $META"
           
           if [ -z "$UNITY" ] || [ -z "$META" ]; then
-            echo "LỖI: Thiếu file UnityFramework hoặc global-metadata.dat!"
+            echo "LỖI: Không thấy file trong Zip!"
             exit 1
           fi
 
-          # Chạy dumper
+          # Thực hiện dịch ngược
           dotnet DumperTool/Il2CppDumper.dll "$UNITY" "$META" output/
 
-      - name: Upload Results
+      - name: Trả hàng Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: LQM-Offsets-Json
