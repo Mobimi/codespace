@@ -11,17 +11,17 @@ jobs:
       - name: Tạo thư mục làm việc
         run: mkdir dumper_workspace
 
-      - name: Tải vũ khí Il2CppDumper
+      - name: Tải vũ khí Il2CppDumper (Bản Chuẩn Bất Tử)
         run: |
           cd dumper_workspace
-          wget -q -O dumper.zip https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.40/Il2CppDumper-linux-v6.7.40.zip
+          # Tải bản Universal chuẩn xác 100%
+          curl -L -o dumper.zip https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.40/Il2CppDumper-v6.7.40.zip
           unzip -q dumper.zip -d DumperTool
-          chmod +x DumperTool/Il2CppDumper
 
       - name: Kéo file từ GitHub Releases (Tốc độ VIP)
         run: |
           cd dumper_workspace
-          # DÁN CÁI LINK BÁC VỪA COPY VÀO TRONG CẶP NGOẶC KÉP NÀY
+          # NHỚ DÁN LẠI CÁI LINK DATA.ZIP CỦA BÁC VÀO ĐÂY NHA
           curl -L -o data.zip "LINK_CỦA_BÁC_Ở_ĐÂY"
           
           echo "Đang bung nén cục hàng..."
@@ -39,8 +39,8 @@ jobs:
           echo "Tìm thấy UnityFramework tại: $UNITY_FILE"
           echo "Tìm thấy Metadata tại: $META_FILE"
           
-          # Đưa lên thớt dịch ngược
-          ./DumperTool/Il2CppDumper "$UNITY_FILE" "$META_FILE" output/ || true
+          # Dùng dotnet để ép máy ảo chạy tool (Cực kỳ uy tín)
+          dotnet DumperTool/Il2CppDumper.dll "$UNITY_FILE" "$META_FILE" output/ || true
 
       - name: Gói Offsets trả về
         uses: actions/upload-artifact@v4
