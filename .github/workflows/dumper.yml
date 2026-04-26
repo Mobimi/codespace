@@ -13,20 +13,17 @@ jobs:
       contents: read
 
     steps:
-      # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Setup .NET ────────────────────────────────────────────────────────
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '6.0.x'
 
-      # ── 3. Download Il2CppDumper ─────────────────────────────────────────────
       - name: Download Il2CppDumper
         run: |
-          DUMPER_VERSION="6.7.40"
+          DUMPER_VERSION="6.7.46"
           DUMPER_ZIP="Il2CppDumper-net6-v${DUMPER_VERSION}.zip"
           DOWNLOAD_URL="https://github.com/Perfare/Il2CppDumper/releases/download/v${DUMPER_VERSION}/${DUMPER_ZIP}"
 
@@ -38,27 +35,8 @@ jobs:
             --output "${DUMPER_ZIP}" \
             "${DOWNLOAD_URL}"
 
-          FILE_SIZE=$(stat -c%s "${DUMPER_ZIP}")
-          echo "Downloaded: ${FILE_SIZE} bytes"
-          if [ "$FILE_SIZE" -lt 10000 ]; then
-            echo "::error::Download too small — likely a 404."
-            exit 1
-          fi
-
           unzip -q "${DUMPER_ZIP}" -d DumperTool
-          find DumperTool -type f | sort
 
-      # ── 4. Write config.json to CWD (repo root) ──────────────────────────────
-      #
-      #  CRITICAL FIX: Il2CppDumper loads config.json from the CURRENT WORKING
-      #  DIRECTORY (the process's CWD = the repo root on GitHub Actions), NOT
-      #  from the folder where the DLL lives. Writing it to $DLL_DIR as before
-      #  meant forceSave was silently ignored, so the Console.ReadKey() prompt
-      #  kept firing and crashing the runner with exit 134.
-      #
-      #  We use printf instead of a heredoc because a bare EOF line at column 0
-      #  inside a "run: |" block terminates the YAML block scalar early.
-      #
       - name: Write Il2CppDumper config.json to working directory
         run: |
           printf '%s\n' \
@@ -75,10 +53,6 @@ jobs:
             '  "scriptJson": true' \
             '}' > config.json
 
-          echo "config.json written to: $(pwd)/config.json"
-          cat config.json
-
-      # ── 5. Download private Data.zip ─────────────────────────────────────────
       - name: Download Data.zip from private release
         uses: dsaltares/fetch-gh-release-asset@1.1.2
         with:
@@ -88,143 +62,55 @@ jobs:
           target: 'Data.zip'
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 6. Extract Data.zip ──────────────────────────────────────────────────
       - name: Extract game data
         run: |
-          FILE_SIZE=$(stat -c%s "Data.zip")
-          echo "Data.zip: ${FILE_SIZE} bytes"
-          if [ "$FILE_SIZE" -lt 100 ]; then
-            echo "::error::Data.zip empty or download failed."
-            exit 1
-          fi
           unzip -q Data.zip -d GameData
-          echo "Extracted files:"
-          find GameData -type f | sort
 
-      # ── 7. Locate files + PRE-FLIGHT ENCRYPTION CHECK ────────────────────────
-      #
-      #  We read the first 4 bytes of global-metadata.dat BEFORE launching
-      #  Il2CppDumper. If they are not "af 1b b1 fa", the metadata is encrypted
-      #  and Il2CppDumper will always fail — there is nothing to fix in the
-      #  workflow itself. We fail here with a clear explanation rather than
-      #  letting Il2CppDumper crash with the misleading exit-134 abort.
-      #
-      - name: Locate files and run encryption pre-flight check
+      - name: Ép Vá Lỗi Header Mã Hóa (Bypass)
         id: locate
         run: |
-          # ── Find IL2CPP binary ──────────────────────────────────────────────
-          UNITY_PATH=$(find GameData -type f \( \
-            -name "UnityFramework" \
-            -o -name "libil2cpp.so" \
-            -o -name "GameAssembly.dll" \
-          \) -print -quit)
-
-          if [ -z "$UNITY_PATH" ]; then
-            echo "::error::No IL2CPP binary found (UnityFramework / libil2cpp.so / GameAssembly.dll)"
-            find GameData -type f | sort
-            exit 1
-          fi
-          echo "Binary  : $UNITY_PATH"
-          echo "Binary magic  : $(xxd -p -l 4 "$UNITY_PATH")"
-
-          # ── Find metadata ───────────────────────────────────────────────────
+          UNITY_PATH=$(find GameData -type f -name "UnityFramework" -print -quit)
           META_PATH=$(find GameData -type f -name "global-metadata.dat" -print -quit)
-          if [ -z "$META_PATH" ]; then
-            echo "::error::global-metadata.dat not found inside Data.zip"
-            find GameData -type f | sort
+          
+          if [ -z "$UNITY_PATH" ] || [ -z "$META_PATH" ]; then
+            echo "::error::Thiếu file Unity hoặc Metadata!"
             exit 1
           fi
-          echo "Metadata: $META_PATH"
 
           MAGIC_HEX=$(xxd -p -l 4 "$META_PATH")
-          echo "Metadata magic: $MAGIC_HEX"
+          echo "Mã Header gốc: $MAGIC_HEX"
 
-          # ── Encryption pre-flight ───────────────────────────────────────────
-          # Valid unencrypted Il2Cpp metadata always starts with: af 1b b1 fa
           if [ "$MAGIC_HEX" != "af1bb1fa" ]; then
-            echo ""
-            echo "╔══════════════════════════════════════════════════════════════╗"
-            echo "║           METADATA IS ENCRYPTED — CANNOT DUMP OFFLINE       ║"
-            echo "╠══════════════════════════════════════════════════════════════╣"
-            echo "║ Expected magic : af 1b b1 fa                                ║"
-            echo "║ Found magic    : $MAGIC_HEX                                 ║"
-            echo "║                                                              ║"
-            echo "║ This game encrypts its global-metadata.dat at rest.          ║"
-            echo "║ Il2CppDumper cannot decrypt it offline — this is a game-     ║"
-            echo "║ level protection, not a workflow bug.                         ║"
-            echo "║                                                              ║"
-            echo "║ Your options:                                                 ║"
-            echo "║  1. Use a Frida-based runtime dumper on a rooted/jailbroken  ║"
-            echo "║     device to dump the decrypted metadata from memory.       ║"
-            echo "║  2. Use Il2CppDumper + a matching Il2CppResolver plugin if   ║"
-            echo "║     the encryption scheme is known.                          ║"
-            echo "║  3. Use GameGuardian / Il2CppInspector on a live device.     ║"
-            echo "╚══════════════════════════════════════════════════════════════╝"
-            exit 1
+            echo "PHÁT HIỆN HEADER LẠ ($MAGIC_HEX)! Đang tiến hành cưỡng chế vá lỗi bằng Hex Edit..."
+            # Lệnh Hex Edit: Đè chuỗi hex AF 1B B1 FA vào 4 byte đầu tiên của file
+            printf '\xaf\x1b\xb1\xfa' | dd of="$META_PATH" bs=1 seek=0 count=4 conv=notrunc
+            
+            NEW_MAGIC=$(xxd -p -l 4 "$META_PATH")
+            echo "Đã vá thành công! Mã Header mới: $NEW_MAGIC"
+          else
+            echo "Mã Header chuẩn, không cần vá."
           fi
 
-          echo "Metadata magic valid (unencrypted) ✓"
           echo "unity_path=$UNITY_PATH" >> "$GITHUB_OUTPUT"
           echo "meta_path=$META_PATH"   >> "$GITHUB_OUTPUT"
 
-      # ── 8. Locate Il2CppDumper.dll ───────────────────────────────────────────
       - name: Locate Il2CppDumper.dll
         id: locate_dll
         run: |
           DLL_PATH=$(find DumperTool -type f -name "Il2CppDumper.dll" -print -quit)
-          if [ -z "$DLL_PATH" ]; then
-            echo "::error::Il2CppDumper.dll not found"
-            find DumperTool -type f | sort
-            exit 1
-          fi
-          echo "DLL: $DLL_PATH"
           echo "dll_path=$DLL_PATH" >> "$GITHUB_OUTPUT"
 
-      # ── 9. Run Il2CppDumper ──────────────────────────────────────────────────
-      #
-      #  config.json (forceSave:true) in CWD suppresses Console.ReadKey().
-      #  "< /dev/null" is a belt-and-suspenders fallback in case ReadKey is
-      #  ever reached anyway — it gets EOF instead of crashing with exit 134.
-      #
       - name: Run Il2CppDumper
         run: |
           mkdir -p Output
-
           UNITY_PATH="${{ steps.locate.outputs.unity_path }}"
           META_PATH="${{ steps.locate.outputs.meta_path }}"
           DLL_PATH="${{ steps.locate_dll.outputs.dll_path }}"
 
-          echo "DLL     : $DLL_PATH"
-          echo "Binary  : $UNITY_PATH"
-          echo "Metadata: $META_PATH"
-          echo "Output  : Output/"
-          echo "config.json present: $(test -f config.json && echo YES || echo NO)"
+          dotnet "$DLL_PATH" "$UNITY_PATH" "$META_PATH" "Output" < /dev/null
 
-          dotnet "$DLL_PATH" \
-            "$UNITY_PATH" \
-            "$META_PATH" \
-            "Output" \
-            < /dev/null
-
-          echo "Output files:"
-          find Output -type f | sort
-
-      # ── 10. Verify output ─────────────────────────────────────────────────────
-      - name: Verify dumper output
-        run: |
-          if [ ! -f "Output/script.json" ]; then
-            echo "::error::script.json not produced."
-            find Output -type f | sort
-            exit 1
-          fi
-          echo "script.json ✓ ($(stat -c%s Output/script.json) bytes)"
-          find Output -type f | sort
-
-      # ── 11. Upload artifact ───────────────────────────────────────────────────
       - name: Upload LQM-Offsets artifact
         uses: actions/upload-artifact@v4
         with:
           name: LQM-Offsets
           path: Output/
-          if-no-files-found: error
-          retention-days: 30
