@@ -1,0 +1,49 @@
+name: Build Tweak (Theos)
+
+# Cấu hình khi nào thì Action này chạy
+on:
+  push:
+    branches: [ "main", "master" ] # Tự build khi push code lên nhánh main/master
+  workflow_dispatch: # Tạo nút "Run workflow" để ông bấm build thủ công bằng tay trên web
+
+jobs:
+  build:
+    name: Compile Dylib & Deb
+    runs-on: macos-latest # Mượn server macOS của GitHub
+
+    env:
+      THEOS: ${{ github.workspace }}/theos # Set biến môi trường THEOS
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Install Dependencies
+        run: |
+          brew install dpkg ldid
+          # dpkg để đóng gói file .deb, ldid để giả chữ ký Apple (fakesign)
+
+      - name: 🚀 Setup Theos
+        run: |
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+
+      - name: 📦 Setup iOS SDKs
+        run: |
+          git clone https://github.com/theos/sdks.git $THEOS/sdks
+
+      - name: 🔨 Build Tweak (Final Package)
+        run: |
+          make package FINALPACKAGE=1
+          # FINALPACKAGE=1 để build ra bản Release (nhẹ hơn, chạy mượt hơn, bỏ qua code debug)
+
+      - name: 📤 Upload .deb Artifact (Cho máy Jailbreak)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tweak-DEB-Package
+          path: packages/*.deb
+
+      - name: 📤 Upload .dylib Artifact (Cho máy KHÔNG Jailbreak)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tweak-Dylib-File
+          path: .theos/obj/**/*.dylib
